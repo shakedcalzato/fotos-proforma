@@ -269,19 +269,21 @@ class CanvasButton(tk.Canvas):
 # =============================================================================
 
 class DropZone(tk.Canvas):
-    """Bandeja visual con borde punteado donde se arrastran PDFs.
+    """Bandeja visual con borde punteado para indicar donde arrastrar PDFs.
 
-    Acepta:
-    - Drops desde Finder/Explorer (via tkinterdnd2 si esta disponible).
-    - Clicks (abre el filedialog, igual que el boton de abajo) — asi
-      la zona NO es solo decorativa para usuarios sin DnD.
+    IMPORTANTE: la registracion del drop target NO se hace aca — se hace
+    en el ROOT window de App (ver App._wire_root_dnd). En macOS los Canvas
+    widgets a veces no reciben <<Drop>> events de forma confiable; el root
+    es mucho mas robusto. Esta clase solo se encarga del dibujo y de
+    forwardear clicks al filedialog. App le avisa cuando hay drag-over
+    para que cambie de color con set_dragover().
 
     Estados visuales:
     - Idle:        borde gris, texto neutro.
     - Drag-over:   borde y texto azul ACCENT, fondo tintado.
     """
 
-    def __init__(self, parent, on_drop, on_click, width=None, height=130,
+    def __init__(self, parent, on_click, width=None, height=130,
                  parent_bg=BG):
         # Si no nos pasan width, ocupamos lo que el parent nos de.
         kwargs = {"height": height, "bg": parent_bg,
@@ -290,7 +292,6 @@ class DropZone(tk.Canvas):
             kwargs["width"] = width
         super().__init__(parent, **kwargs)
 
-        self.on_drop = on_drop
         self.on_click = on_click
         self._height = height
         self._hover = False
@@ -304,19 +305,12 @@ class DropZone(tk.Canvas):
         # NO customizamos el cursor: regla del proyecto (ver docstring del
         # modulo arriba — el cursor queda el del sistema en todos lados).
 
-        # Registrar como drop target — soft fail si tkinterdnd2 no esta.
-        # Logueamos el resultado para diagnosticar problemas en empaquetado.
-        if DND_AVAILABLE:
-            try:
-                self.drop_target_register(DND_FILES)
-                self.dnd_bind("<<DropEnter>>", self._on_drag_enter)
-                self.dnd_bind("<<DropLeave>>", self._on_drag_leave)
-                self.dnd_bind("<<Drop>>", self._on_drop_event)
-                _log_event("DnD: DropZone registrada OK")
-            except Exception as e:
-                _log_event(
-                    f"DnD: drop_target_register FAIL — {type(e).__name__}: {e}"
-                )
+    def set_dragover(self, value):
+        """Llamado desde App cuando un archivo entra/sale de la ventana.
+        Cambia el color de la bandeja para dar feedback visual."""
+        if self._hover != bool(value):
+            self._hover = bool(value)
+            self._draw()
 
     def _draw(self):
         self.delete("all")
@@ -381,21 +375,6 @@ class DropZone(tk.Canvas):
     def _on_click(self, _event=None):
         if self.on_click:
             self.on_click()
-
-    def _on_drag_enter(self, _event):
-        self._hover = True
-        self._draw()
-
-    def _on_drag_leave(self, _event):
-        self._hover = False
-        self._draw()
-
-    def _on_drop_event(self, event):
-        self._hover = False
-        self._draw()
-        paths = self._parse_dnd_paths(event.data)
-        if paths and self.on_drop:
-            self.on_drop(paths)
 
     @staticmethod
     def _parse_dnd_paths(data):
@@ -672,6 +651,12 @@ class App:
 
         self.show_screen1()
 
+        # Registrar drop target en TODA la ventana (no en la bandeja). En
+        # macOS los Canvas widgets reciben drops de forma poco confiable;
+        # el root window siempre los recibe. Bonus: el usuario puede arrastrar
+        # a cualquier lado de la ventana, no solo a la bandeja.
+        self._wire_root_dnd()
+
         # Si la app fue invocada con PDF(s) como argumento (drag al .app desde
         # Finder antes de que la app este abierta) los cargamos.
         argv_pdfs = [
@@ -680,6 +665,53 @@ class App:
         ]
         if argv_pdfs:
             self.root.after(100, lambda paths=argv_pdfs: self._load_pdf_paths(paths))
+
+    def _wire_root_dnd(self):
+        """Registra el root window como drop target para archivos. Los drops
+        se aceptan en cualquier parte de la ventana y se delegan al handler
+        de pantalla 1. En pantallas 2/3 los drops se ignoran (la bandeja ya
+        no existe)."""
+        if not self.dnd_active:
+            return
+        try:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<DropEnter>>", self._on_root_dnd_enter)
+            self.root.dnd_bind("<<DropLeave>>", self._on_root_dnd_leave)
+            self.root.dnd_bind("<<Drop>>", self._on_root_drop)
+            _log_event("DnD: root drop target registrado OK")
+        except Exception as e:
+            _log_event(
+                f"DnD: root drop_target_register FAIL — {type(e).__name__}: {e}"
+            )
+
+    def _dropzone_alive(self):
+        """True si la bandeja de pantalla 1 existe y esta empaquetada (o sea,
+        estamos en pantalla 1). Usado por los handlers de drop para decidir
+        si reaccionar al evento."""
+        return (
+            hasattr(self, "s1_drop_zone")
+            and self.s1_drop_zone is not None
+            and self.s1_drop_zone.winfo_exists()
+        )
+
+    def _on_root_dnd_enter(self, _event):
+        if self._dropzone_alive():
+            self.s1_drop_zone.set_dragover(True)
+
+    def _on_root_dnd_leave(self, _event):
+        if self._dropzone_alive():
+            self.s1_drop_zone.set_dragover(False)
+
+    def _on_root_drop(self, event):
+        if self._dropzone_alive():
+            self.s1_drop_zone.set_dragover(False)
+        else:
+            # No estamos en pantalla 1: ignoramos el drop silenciosamente.
+            return
+        paths = DropZone._parse_dnd_paths(event.data)
+        _log_event(f"DnD: drop recibido — {len(paths)} PDF(s)")
+        if paths:
+            self._on_dropzone_drop(paths)
 
     # --- Backwards-compat properties (codigo viejo asume singular) -----------
     @property
@@ -884,10 +916,12 @@ class App:
 
         # Drop zone — bandeja con borde punteado donde se arrastran PDFs.
         # Click en cualquier parte = mismo flujo que el boton (filedialog).
-        # Drop = agrega los PDFs arrastrados al batch actual.
+        # Los DROPS los recibe el root window (no la bandeja en si — en macOS
+        # los Canvas widgets reciben eventos DnD de forma poco confiable),
+        # ver App._wire_root_dnd. Esta bandeja solo dibuja y se pinta azul
+        # cuando hay un drag-over en cualquier parte de la ventana.
         self.s1_drop_zone = DropZone(
             inner,
-            on_drop=self._on_dropzone_drop,
             on_click=self._on_pick_pdf,
             parent_bg=SURFACE,
             height=120,
