@@ -2,18 +2,18 @@
 """Entry point - lanza la app de escritorio.
 
 Instala un crash handler global ANTES de levantar la UI para que si algo
-inesperado pasa, quede logueado a ~/Library/Logs/FotosProforma.log
-en lugar de cerrarse silenciosamente.
+inesperado pasa, quede logueado al log de la app (path elegido segun el SO
+por platform_utils.app_log_path()) en lugar de cerrarse silenciosamente.
 """
 
 import sys
 import threading
 import datetime
 import traceback
-from pathlib import Path
 
+import platform_utils
 
-LOG_PATH = Path.home() / "Library" / "Logs" / "FotosProforma.log"
+LOG_PATH = platform_utils.app_log_path()
 
 
 def _log_exception(prefix, exc_type, exc_value, exc_tb):

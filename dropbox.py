@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Auto-detecta la raiz de Dropbox sincronizado en macOS.
+"""Auto-detecta la raiz de Dropbox sincronizado (macOS, Windows o Linux).
 
 Probamos los paths estandar en orden y devolvemos el primero que existe.
 Si nada matchea, levantamos DropboxNotFoundError con un mensaje util.
@@ -10,12 +10,11 @@ borramos nada dentro. Las copias de fotos van a ~/Desktop, no a Dropbox.
 
 from pathlib import Path
 
+import platform_utils
 
-CANDIDATE_PATHS = [
-    Path.home() / "Dropbox",
-    Path.home() / "Library/CloudStorage/Dropbox",
-    Path.home() / "Library/CloudStorage/Dropbox-Personal",
-]
+
+# Lista de candidatos segun el SO, viene de platform_utils.
+CANDIDATE_PATHS = platform_utils.dropbox_candidate_paths()
 
 
 class DropboxNotFoundError(Exception):
@@ -39,8 +38,9 @@ def find_dropbox_root():
             found = p
             break
 
-    # Fallback: cualquier subcarpeta de ~/Library/CloudStorage que empiece con "Dropbox"
-    if found is None:
+    # Fallback macOS: cualquier subcarpeta de ~/Library/CloudStorage cuyo
+    # nombre empiece con "Dropbox" (cubre Dropbox-Business y variantes).
+    if found is None and platform_utils.IS_MAC:
         cs = Path.home() / "Library" / "CloudStorage"
         if cs.is_dir():
             for sub in sorted(cs.iterdir()):

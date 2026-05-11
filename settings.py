@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """Persistencia de preferencias del usuario entre sesiones.
 
-Guarda en ~/Library/Application Support/FotosProforma/settings.json
-las elecciones de la ultima corrida (modo, opción de "si la referencia
-no tiene foto individual", carpeta destino) para que la proxima vez
-que abra la app le levante con los mismos valores.
+Guarda en el directorio de settings de la app (segun el SO, ver
+platform_utils.app_settings_dir()) las elecciones de la ultima corrida
+(modo, opción de "si la referencia no tiene foto individual", carpeta
+destino) para que la proxima vez que abra la app levante con los mismos
+valores.
 
 NUNCA falla: si el archivo no existe o esta corrupto, devuelve los
 defaults. Si falla guardar, lo ignora silenciosamente (no es critico).
@@ -13,8 +14,10 @@ defaults. Si falla guardar, lo ignora silenciosamente (no es critico).
 import json
 from pathlib import Path
 
+import platform_utils
 
-SETTINGS_DIR = Path.home() / "Library" / "Application Support" / "FotosProforma"
+
+SETTINGS_DIR = platform_utils.app_settings_dir()
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
 DEFAULTS = {

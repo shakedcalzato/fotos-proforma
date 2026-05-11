@@ -28,6 +28,7 @@ from brands import parse_sku
 import processor
 import dropbox as dropbox_mod
 import settings as user_settings
+import platform_utils
 
 
 # =============================================================================
@@ -1208,24 +1209,9 @@ class App:
         else:
             body = f"{copied} fotos copiadas. Todas encontradas."
 
-        # Usamos osascript para no agregar dependencias.
-        # Los strings en AppleScript usan comillas dobles, asi que escapamos
-        # cualquier comilla doble en title/body.
-        def _escape(s):
-            return s.replace("\\", "\\\\").replace('"', '\\"')
-
-        script = (
-            f'display notification "{_escape(body)}" '
-            f'with title "{_escape(title)}" '
-            f'sound name "Glass"'
-        )
-        try:
-            subprocess.Popen(
-                ["osascript", "-e", script],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass  # notificación es nice-to-have, si falla no es crítico
+        # Notificación nativa segun el SO (macOS/Windows/Linux). Si el SO
+        # no soporta o falla, no rompe el flujo - es nice-to-have.
+        platform_utils.show_notification(title, body)
 
     def _safe_progress_cb(self, current, total, msg):
         self.root.after(0, lambda: self._update_progress(current, total, msg))
@@ -1515,22 +1501,22 @@ class App:
             )
 
     def _open_all_dests(self):
-        """Abre todas las carpetas destino en Finder."""
+        """Abre todas las carpetas destino en el explorador del SO
+        (Finder en macOS, Explorer en Windows, xdg-open en Linux)."""
         for r in self.results:
-            try:
-                subprocess.run(["open", str(r["dest"])], check=False)
-            except Exception:
-                pass
+            platform_utils.open_in_explorer(r["dest"])
 
     def _make_open_dest_handler(self, dest_path):
         """Devuelve un handler que abre SOLO esta carpeta (no otras).
         Usar este factory evita closures raros con lambdas en loops."""
         dest_str = str(dest_path)
         def handler():
-            try:
-                subprocess.run(["open", dest_str], check=False)
-            except Exception as e:
-                messagebox.showerror("No pude abrir la carpeta", str(e))
+            ok = platform_utils.open_in_explorer(dest_str)
+            if not ok:
+                messagebox.showerror(
+                    "No pude abrir la carpeta",
+                    f"No se pudo abrir:\n{dest_str}",
+                )
         return handler
 
     def _build_scrollable_results_list(self, parent, results):
@@ -1745,10 +1731,12 @@ class App:
     def _open_dest(self):
         if not self.result:
             return
-        try:
-            subprocess.run(["open", str(self.result["dest"])], check=False)
-        except Exception as e:
-            messagebox.showerror("No pude abrir la carpeta", str(e))
+        ok = platform_utils.open_in_explorer(self.result["dest"])
+        if not ok:
+            messagebox.showerror(
+                "No pude abrir la carpeta",
+                f"No se pudo abrir:\n{self.result['dest']}",
+            )
 
     # ---------- Copiar al portapapeles ---------------------------------------
 
@@ -1812,7 +1800,7 @@ class App:
         """Atrapa excepciones en callbacks de tk (clicks, eventos, etc)."""
         import traceback, datetime
         tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        log_path = Path.home() / "Library" / "Logs" / "FotosProforma.log"
+        log_path = platform_utils.app_log_path()
         try:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"\n=== {datetime.datetime.now()} TK_CALLBACK ===\n")
