@@ -1213,6 +1213,11 @@ class App:
             return
         paths = DropZone._parse_dnd_paths(event.data)
         _log_event(f"DnD: drop recibido — {len(paths)} PDF(s)")
+        # Flag temporal: en macOS soltar un drop sobre el Canvas a veces
+        # dispara un click sintetico justo despues que abriria el filedialog.
+        # Silenciamos cualquier click en los proximos 400ms.
+        self._drop_in_progress = True
+        self.root.after(400, lambda: setattr(self, "_drop_in_progress", False))
         if paths:
             self._on_dropzone_drop(paths)
 
@@ -1516,6 +1521,11 @@ class App:
         """Abre el dialog de archivos y AGREGA los seleccionados a la lista
         actual (no reemplaza). Si querés empezar de cero, hay un boton
         'Limpiar' al lado."""
+        # Si recien soltamos un drop, macOS puede haber disparado un click
+        # sintetico sobre la bandeja — ignoramos para no abrir el filedialog
+        # encima del drop que ya esta procesando.
+        if getattr(self, "_drop_in_progress", False):
+            return
         paths = filedialog.askopenfilenames(
             title="Elegí la(s) proforma(s) en PDF",
             filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")],
