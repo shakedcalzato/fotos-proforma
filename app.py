@@ -892,6 +892,7 @@ class App:
         fmt_label = {
             "pepperi":         "Pepperi · Off-line Preview",
             "sap_factura":     "SAP Business One · Factura de Cliente",
+            "sap_pedido":      "SAP Business One · Pedido",
             "sap_proforma":    "SAP Business One · Proforma",
             "sap_cotizacion":  "SAP Business One · Cotización",
         }.get(fmt, fmt)

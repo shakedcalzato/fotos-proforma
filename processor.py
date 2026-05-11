@@ -622,6 +622,7 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
 _FMT_LABELS = {
     "pepperi":        "Pepperi (Off-line Preview)",
     "sap_factura":    "SAP Business One (Factura de Cliente)",
+    "sap_pedido":     "SAP Business One (Pedido)",
     "sap_proforma":   "SAP Business One (Proforma de Cliente)",
     "sap_cotizacion": "SAP Business One (Cotización de Cliente)",
 }

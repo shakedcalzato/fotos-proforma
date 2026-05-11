@@ -43,8 +43,14 @@ def parse(path):
         "factura de cliente" in first_text
         and "sap business one" in first_text
     )
+    # SAP "Pedido": misma estructura de tabla que Factura, parser idéntico.
+    # Lo detectamos por su header característico.
+    is_pedido_sap = (
+        "fecha del pedido" in first_text
+        or "pedido en hold" in first_text
+    )
     # SAP "Proforma de Cliente" y "Cotizacion de Cliente" tienen sus propios
-    # parsers dentro de pdf_parser.py (formato distinto al de Factura).
+    # parsers dentro de pdf_parser.py (formato distinto al de Factura/Pedido).
     is_proforma_sap = "proforma de cliente" in first_text
     is_cotizacion_sap = (
         "cotizacion de cliente" in first_text
@@ -62,10 +68,12 @@ def parse(path):
         or "información de la cuenta" in first_text
     )
 
-    if is_factura_sap:
+    # Factura de Cliente y Pedido comparten estructura de tabla,
+    # los maneja el parser SAP nuevo.
+    if is_factura_sap or is_pedido_sap:
         return pdf_parser_sap.parse(path)
 
-    # Los 3 formatos restantes los maneja pdf_parser.parse_proforma() que tiene
+    # Los formatos restantes los maneja pdf_parser.parse_proforma() que tiene
     # su propio dispatcher interno (pepperi / sap_proforma / sap_cotizacion).
     if is_pepperi or is_proforma_sap or is_cotizacion_sap:
         return pdf_parser.parse_proforma(path)
@@ -74,6 +82,6 @@ def parse(path):
         "Formato de PDF no reconocido.\n\n"
         "La app soporta:\n"
         "  • Proformas de Pepperi (Off-line Preview)\n"
-        "  • Facturas de Cliente de SAP Business One\n"
+        "  • Facturas de Cliente / Pedidos de SAP Business One\n"
         "  • Proformas / Cotizaciones de SAP Business One"
     )

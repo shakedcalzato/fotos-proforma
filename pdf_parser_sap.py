@@ -73,8 +73,12 @@ _CLIENT_RE = re.compile(
 # --- API pública --------------------------------------------------------------
 
 def parse(path):
-    """Punto de entrada. Lee un PDF de Factura SAP y devuelve dict con
-    format, client e items.
+    """Punto de entrada. Lee un PDF de SAP con tabla de productos (Factura
+    de Cliente, Pedido, etc.) y devuelve dict con format, client e items.
+
+    Detecta el subformato leyendo el header de la primera página:
+    - "Factura de Cliente" -> format = "sap_factura"
+    - "Pedido" / "Fecha del Pedido" -> format = "sap_pedido"
 
     Raises:
         ParseError: si el PDF no se puede abrir, está protegido, o no
@@ -88,10 +92,18 @@ def parse(path):
     items = []
     client = None
     seen_skus = set()
+    fmt = "sap_factura"  # default
 
     with pdf:
         if getattr(pdf, "is_encrypted", False):
             raise ParseError("El PDF está protegido con contraseña")
+
+        # Detectar subformato a partir del header de la primera página.
+        first_text_lower = (pdf.pages[0].extract_text() or "").lower()
+        if "factura de cliente" in first_text_lower:
+            fmt = "sap_factura"
+        elif "fecha del pedido" in first_text_lower or "pedido en hold" in first_text_lower:
+            fmt = "sap_pedido"
 
         for page in pdf.pages:
             text = page.extract_text() or ""
@@ -126,7 +138,7 @@ def parse(path):
         )
 
     return {
-        "format": "sap_factura",
+        "format": fmt,
         "client": client,
         "items": items,
     }
