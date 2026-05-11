@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.Python
+
+# ---- Build / packaging ----
+build/
+dist/
+*.spec
+*.exe
+
+# ---- Venvs ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- App-specific: datos del negocio ----
+# Cualquier proforma de prueba o archivo de datos REAL no debe entrar al repo.
+test_pdfs/
+test_data/
+sample_proformas/
+*.pdf
+# .icns no van al repo (los regeneramos)
+*.icns
+AppIcon.iconset/
+
+# ---- Logs y archivos generados en runtime ----
+*.log
+.coverage
+htmlcov/
