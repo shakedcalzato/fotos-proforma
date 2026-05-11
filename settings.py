@@ -24,6 +24,9 @@ DEFAULTS = {
     "modo": "complete",
     "no_ind": "grupal",
     "dest_root": str(Path.home() / "Desktop" / "Fotos de Proformas"),
+    # Geometria de la ventana del ultimo cierre, formato "WxH+X+Y". Vacio
+    # significa "primer arranque, usar tamaño/posicion default y centrar".
+    "window_geometry": "",
 }
 
 

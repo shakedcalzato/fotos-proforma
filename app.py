@@ -75,13 +75,22 @@ ACCENT_HOVER = "#0058B5"
 ACCENT_TINT  = "#E8F1FC"
 
 BORDER          = "#D2D2D7"
+BORDER_SUBTLE   = "#E5E5EA"   # borde mas sutil para card en reposo
 BORDER_STRONG   = "#A8A8AC"
+
+# Sombra "fake" debajo de las cards. En tk classic no hay drop-shadow real;
+# emulamos con un Frame de 2-3px en un gris ligeramente mas oscuro que BG.
+SHADOW          = "#E0E0E5"
 
 DISABLED_BG = "#E5E5EA"
 DISABLED_FG = "#A8A8AC"
 
 SUCCESS = "#30A46C"
 ERROR   = "#E5484D"
+
+# Toast (snackbar): fondo oscuro semi-opaco con texto claro, estilo macOS.
+TOAST_BG    = "#1D1D1F"
+TOAST_FG    = "#FFFFFF"
 
 
 # =============================================================================
@@ -434,16 +443,91 @@ class DropZone(tk.Canvas):
 
 
 # =============================================================================
-# Card - frame blanco con borde sutil
+# Card - frame blanco con borde sutil, sombra liviana abajo y hover
 # =============================================================================
 
 class Card(tk.Frame):
+    """Frame blanco contenedor con tres mejoras visuales sobre tk.Frame:
+
+    1. Borde sutil (BORDER_SUBTLE) — mas suave que el BORDER fuerte; en hover
+       se intensifica a BORDER, dando sensación de "se puede interactuar".
+    2. Sombra de 2px abajo (Frame extra en gris SHADOW) — en tk classic no
+       hay drop-shadow nativo, esto la emula barato pero efectivo.
+    3. Hover que oscurece el borde — micro-interaccion que da feedback de
+       "el cursor esta encima".
+
+    Tecnica: la clase publica ES la superficie blanca (los hijos se ponen
+    adentro como antes: tk.Frame(card, bg=SURFACE)). Internamente se crea
+    un wrapper Frame que contiene la superficie arriba y la sombra abajo.
+    Las llamadas a pack/grid/place/pack_forget se redirigen al wrapper
+    para que la sombra se mueva con la card.
+    """
+
     def __init__(self, parent, **kwargs):
+        # bg del wrapper = bg del parent para que no se vea el wrapper.
+        try:
+            parent_bg = parent.cget("bg")
+        except tk.TclError:
+            parent_bg = BG
+        self._wrapper = tk.Frame(parent, bg=parent_bg)
+
         super().__init__(
-            parent, bg=SURFACE,
-            highlightbackground=BORDER, highlightcolor=BORDER,
+            self._wrapper, bg=SURFACE,
+            highlightbackground=BORDER_SUBTLE, highlightcolor=BORDER_SUBTLE,
             highlightthickness=1, **kwargs,
         )
+        # Sombra: 2px abajo, mismo ancho que la card.
+        self._shadow = tk.Frame(self._wrapper, bg=SHADOW, height=2)
+
+        # Card arriba con expand=True (asi acepta fill="both" del wrapper
+        # y crece tambien verticalmente cuando hace falta).
+        tk.Frame.pack(self, in_=self._wrapper, fill="both", expand=True, side="top")
+        self._shadow.pack(in_=self._wrapper, fill="x", side="bottom")
+
+        # Hover effect: el borde se intensifica cuando el cursor entra.
+        # add='+' para no pisar binds que el usuario agregue despues.
+        self.bind("<Enter>", self._on_card_hover_in, add="+")
+        self.bind("<Leave>", self._on_card_hover_out, add="+")
+
+    def _on_card_hover_in(self, _event=None):
+        try:
+            self.configure(
+                highlightbackground=BORDER,
+                highlightcolor=BORDER,
+            )
+        except tk.TclError:
+            pass
+
+    def _on_card_hover_out(self, _event=None):
+        try:
+            self.configure(
+                highlightbackground=BORDER_SUBTLE,
+                highlightcolor=BORDER_SUBTLE,
+            )
+        except tk.TclError:
+            pass
+
+    # --- redirigir geometry managers al wrapper ----------------------------
+    # Asi cuando codigo llama card.pack(fill='x'), packea el wrapper completo
+    # (card + sombra) en vez de solo la card sin sombra.
+
+    def pack(self, **kwargs):
+        return self._wrapper.pack(**kwargs)
+
+    def pack_forget(self):
+        return self._wrapper.pack_forget()
+
+    def grid(self, **kwargs):
+        return self._wrapper.grid(**kwargs)
+
+    def grid_forget(self):
+        return self._wrapper.grid_forget()
+
+    def place(self, **kwargs):
+        return self._wrapper.place(**kwargs)
+
+    def place_forget(self):
+        return self._wrapper.place_forget()
 
 
 # =============================================================================
@@ -606,6 +690,152 @@ class SegmentedControl(tk.Frame):
 
 
 # =============================================================================
+# Toast - notificacion no-intrusiva abajo centrada
+# =============================================================================
+
+class Toast:
+    """Aviso temporal que aparece abajo centrado y se va solo. Reemplaza a
+    messagebox.showinfo para casos donde el usuario no necesita confirmar
+    nada — los toasts no interrumpen el flujo. Para errores criticos donde
+    si necesitamos atencion (PDF corrupto, Dropbox no encontrado, etc)
+    seguimos usando messagebox.
+
+    Implementacion: Toplevel sin borde, con alpha 0.95 si el SO lo soporta,
+    posicionado relative al root window.
+    """
+
+    _current = None  # ultimo toast vivo (para reemplazarlo si llaman otro)
+
+    @classmethod
+    def show(cls, root, text, duration_ms=2500):
+        # Si ya hay uno visible, lo descartamos antes de mostrar el nuevo.
+        cls._destroy_current()
+
+        top = tk.Toplevel(root)
+        top.overrideredirect(True)         # sin barra de titulo / borde
+        top.attributes("-topmost", True)
+        try:
+            top.attributes("-alpha", 0.95)
+        except tk.TclError:
+            pass
+        top.configure(bg=TOAST_BG)
+
+        tk.Label(
+            top, text=text, font=FONT_BODY,
+            bg=TOAST_BG, fg=TOAST_FG, padx=20, pady=12,
+        ).pack()
+
+        # Posicionar abajo-centro del root window.
+        root.update_idletasks()
+        top.update_idletasks()
+        rx = root.winfo_rootx()
+        ry = root.winfo_rooty()
+        rw = root.winfo_width()
+        rh = root.winfo_height()
+        tw = top.winfo_width()
+        th = top.winfo_height()
+        x = rx + (rw - tw) // 2
+        y = ry + rh - th - 32
+        top.geometry(f"+{x}+{y}")
+
+        cls._current = top
+        root.after(duration_ms, lambda t=top: cls._destroy(t))
+
+    @classmethod
+    def _destroy(cls, top):
+        if cls._current is top:
+            cls._current = None
+        try:
+            top.destroy()
+        except Exception:
+            pass
+
+    @classmethod
+    def _destroy_current(cls):
+        if cls._current is not None:
+            cls._destroy(cls._current)
+
+
+# =============================================================================
+# Spinner - circulo animado para loading states
+# =============================================================================
+
+class Spinner(tk.Canvas):
+    """Spinner circular animado de 8 puntos. Uso:
+        s = Spinner(parent, size=24)
+        s.pack()
+        s.start()
+        ...
+        s.stop()
+        s.destroy()
+    """
+
+    def __init__(self, parent, size=24, color=ACCENT, bg=None):
+        bg = bg or parent.cget("bg")
+        super().__init__(
+            parent, width=size, height=size,
+            bg=bg, highlightthickness=0, bd=0,
+        )
+        self._size = size
+        self._color = color
+        self._bg = bg
+        self._step = 0
+        self._after_id = None
+
+    def start(self, interval_ms=90):
+        self._tick()
+        self._after_id = self.after(interval_ms, self._loop, interval_ms)
+
+    def _loop(self, interval_ms):
+        self._step = (self._step + 1) % 8
+        self._tick()
+        if self._after_id is not None:
+            self._after_id = self.after(interval_ms, self._loop, interval_ms)
+
+    def _tick(self):
+        import math
+        self.delete("all")
+        n = 8
+        radius_outer = self._size / 2 - 3
+        radius_dot = max(1.5, self._size / 10)
+        cx = cy = self._size / 2
+        # Alphas decrecientes desde el "punto activo": el actual opaco,
+        # los demas cada vez mas claros (mezcla con bg).
+        alphas = [1.0, 0.78, 0.58, 0.42, 0.30, 0.22, 0.16, 0.12]
+        for i in range(n):
+            angle = 2 * math.pi * i / n - math.pi / 2
+            x = cx + radius_outer * math.cos(angle)
+            y = cy + radius_outer * math.sin(angle)
+            offset = (self._step - i) % n
+            alpha = alphas[offset]
+            color = self._mix(self._color, self._bg, alpha)
+            self.create_oval(
+                x - radius_dot, y - radius_dot,
+                x + radius_dot, y + radius_dot,
+                fill=color, outline="",
+            )
+
+    def stop(self):
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        self.delete("all")
+
+    @staticmethod
+    def _mix(fg, bg, alpha):
+        """Mezcla colores hex: alpha=1 → fg puro, alpha=0 → bg puro."""
+        fr, fgv, fb = int(fg[1:3], 16), int(fg[3:5], 16), int(fg[5:7], 16)
+        br, bgv, bb = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
+        r = int(fr * alpha + br * (1 - alpha))
+        g = int(fgv * alpha + bgv * (1 - alpha))
+        b = int(fb * alpha + bb * (1 - alpha))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+
+# =============================================================================
 # App
 # =============================================================================
 
@@ -649,10 +879,20 @@ class App:
         self.root.configure(bg=BG)
         self.root.minsize(WINDOW_W_MIN, WINDOW_H_MIN)
         # Sin maxsize: la app se puede maximizar libremente.
-        self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
+        # NOTA: el geometry inicial se aplica mas tarde en run() leyendo de
+        # settings (recuerda lo que el usuario eligio la sesion anterior). Si
+        # no hay nada guardado, run() centra una ventana del tamaño default.
 
-        # Cargar preferencias guardadas (modo, no_ind, dest_root)
+        # Track de pantalla actual (1, 2, "processing", "result") para que
+        # los atajos de teclado sepan que hacer en cada contexto.
+        self._current_screen = None
+
+        # Interceptar el cierre de la ventana para guardar geometry primero.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Cargar preferencias guardadas (modo, no_ind, dest_root, geometry)
         prefs = user_settings.load()
+        self._saved_geometry = prefs.get("window_geometry", "") or ""
 
         # Estado
         # pdf_paths es la lista canonica (puede ser 1 o varios para batch).
@@ -691,6 +931,9 @@ class App:
         # a cualquier lado de la ventana, no solo a la bandeja.
         self._wire_root_dnd()
 
+        # Atajos de teclado: Enter avanza, Esc vuelve, Cmd+W cierra.
+        self._wire_shortcuts()
+
         # Si la app fue invocada con PDF(s) como argumento (drag al .app desde
         # Finder antes de que la app este abierta) los cargamos.
         argv_pdfs = [
@@ -699,6 +942,232 @@ class App:
         ]
         if argv_pdfs:
             self.root.after(100, lambda paths=argv_pdfs: self._load_pdf_paths(paths))
+
+    # =========================================================================
+    # Shortcuts, cierre de ventana, transiciones, toasts, loading
+    # =========================================================================
+
+    def _wire_shortcuts(self):
+        """Atajos de teclado globales (bindeados al root):
+        - Enter: avanzar al siguiente paso (segun pantalla).
+        - Escape: volver atras.
+        - Cmd+W (macOS) / Ctrl+W (Windows/Linux): cerrar la app.
+        - Cmd+Q (macOS): cerrar la app — extra, costumbre mac.
+        """
+        self.root.bind("<Return>", self._on_enter_key)
+        self.root.bind("<KP_Enter>", self._on_enter_key)
+        self.root.bind("<Escape>", self._on_escape_key)
+        self.root.bind("<Command-w>", lambda e: self._on_close())
+        self.root.bind("<Command-q>", lambda e: self._on_close())
+        self.root.bind("<Control-w>", lambda e: self._on_close())
+
+    def _on_enter_key(self, event):
+        """Enter avanza segun el contexto. Si el foco esta en un Entry o
+        Text editable, no interferimos (dejamos que Enter haga lo suyo)."""
+        try:
+            cls = event.widget.winfo_class()
+        except Exception:
+            cls = ""
+        if cls in ("Entry", "TEntry", "Text", "Spinbox"):
+            return
+        screen = self._current_screen
+        if screen == 1:
+            # Solo avanzar si hay al menos un PDF parseado OK.
+            if any("parsed" in e for e in self.parsed_data_list):
+                self._goto(self.show_screen2)
+        elif screen == 2:
+            self._start_processing()
+        # En "processing" no hacemos nada. En "result" tampoco — el usuario
+        # tiene que elegir explicitamente "Abrir carpeta" o "Procesar otra".
+
+    def _on_escape_key(self, _event):
+        screen = self._current_screen
+        if screen == 2:
+            self._goto(self.show_screen1)
+        elif screen == "result":
+            self._back_to_filters()
+
+    def _on_close(self):
+        """Interceptor del cierre de ventana: guardamos geometry antes de
+        salir asi la proxima sesion arranca con el mismo tamaño/posicion."""
+        self._save_geometry()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _save_geometry(self):
+        """Guarda el tamaño + posicion actual en settings.json."""
+        try:
+            geo = self.root.geometry()  # formato "WxH+X+Y"
+            prefs = user_settings.load()
+            prefs["window_geometry"] = geo
+            user_settings.save(prefs)
+        except Exception:
+            pass
+
+    def _restore_geometry(self):
+        """Aplica el geometry guardado si es valido. Si no hay nada guardado
+        o esta fuera de la pantalla actual (ej. usuario desconecto un monitor),
+        centra la ventana con tamaño default."""
+        geo = self._saved_geometry
+        applied = False
+        if geo:
+            try:
+                # Validar que el geometry no este completamente fuera de la
+                # pantalla actual. Formato: "WxH+X+Y" (o sin +X+Y).
+                import re
+                m = re.match(r"(\d+)x(\d+)(?:([+-]\d+)([+-]\d+))?$", geo)
+                if m:
+                    w = int(m.group(1))
+                    h = int(m.group(2))
+                    x = int(m.group(3)) if m.group(3) else None
+                    y = int(m.group(4)) if m.group(4) else None
+                    sw = self.root.winfo_screenwidth()
+                    sh = self.root.winfo_screenheight()
+                    # Sanity: tamaño minimo respetado, posicion dentro de
+                    # alguna pantalla razonable.
+                    w = max(WINDOW_W_MIN, w)
+                    h = max(WINDOW_H_MIN, h)
+                    if x is not None and y is not None:
+                        # Si la esquina superior esta totalmente fuera, lo
+                        # corregimos a algo razonable.
+                        if x < -50 or x > sw - 100 or y < 0 or y > sh - 100:
+                            x = max(0, (sw - w) // 2)
+                            y = max(28, (sh - h) // 2)
+                        self.root.geometry(f"{w}x{h}+{x}+{y}")
+                    else:
+                        self.root.geometry(f"{w}x{h}")
+                    applied = True
+            except Exception:
+                applied = False
+        if not applied:
+            # Default: centrar en area usable (descontando menubar y dock).
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            MENU_BAR = 28
+            DOCK = 90
+            usable_h = sh - MENU_BAR - DOCK
+            x = max(0, (sw - WINDOW_W) // 2)
+            if WINDOW_H >= usable_h:
+                y = MENU_BAR + 5
+            else:
+                y = MENU_BAR + (usable_h - WINDOW_H) // 2
+            self.root.geometry(f"{WINDOW_W}x{WINDOW_H}+{x}+{y}")
+
+    def toast(self, text, duration_ms=2500):
+        """Muestra un toast (notificacion no intrusiva). Wrapper de Toast.show
+        para que el codigo de la app llame self.toast(...) directo."""
+        try:
+            Toast.show(self.root, text, duration_ms=duration_ms)
+        except Exception:
+            # Si el toast falla, no rompemos el flujo — es nice-to-have.
+            pass
+
+    # ---- Loading overlay (#4) ----------------------------------------------
+
+    def _show_loading(self, text="Cargando…"):
+        """Muestra un overlay semi-transparente con spinner + texto.
+        Usado durante operaciones bloqueantes (ej. parseo de PDFs grandes)
+        para que la UI no se sienta congelada."""
+        self._hide_loading()  # idempotente: si hay uno previo lo descartamos
+
+        overlay = tk.Frame(self.root, bg=SURFACE)
+        # Cubre toda la ventana.
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        try:
+            # Alpha en el Frame mismo no se puede, pero podemos hacer la
+            # ventana entera un toque mas opaca: vamos con SURFACE solido.
+            overlay.lift()
+        except Exception:
+            pass
+
+        inner = tk.Frame(overlay, bg=SURFACE)
+        inner.place(relx=0.5, rely=0.5, anchor="center")
+
+        spinner = Spinner(inner, size=36, color=ACCENT, bg=SURFACE)
+        spinner.pack()
+        spinner.start()
+
+        tk.Label(
+            inner, text=text, font=FONT_BODY,
+            bg=SURFACE, fg=TEXT_MUTED,
+        ).pack(pady=(14, 0))
+
+        self._loading_overlay = overlay
+        self._loading_spinner = spinner
+
+    def _hide_loading(self):
+        sp = getattr(self, "_loading_spinner", None)
+        ov = getattr(self, "_loading_overlay", None)
+        if sp is not None:
+            try:
+                sp.stop()
+            except Exception:
+                pass
+            self._loading_spinner = None
+        if ov is not None:
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+            self._loading_overlay = None
+
+    # ---- Fade transition entre pantallas (#7) -------------------------------
+
+    def _goto(self, screen_fn):
+        """Cambia de pantalla con un fade-in sutil. Es la forma estandar
+        de navegar entre pantallas desde botones o atajos de teclado.
+
+        Patron: setea alpha=0.55, cambia contenido instantaneo, hace
+        fade-in animado a 1.0 (~75ms total). No hace fade-out previo —
+        eso requeriria render asincrono que con tk classic es trabajoso
+        y para pantallas que tardan en renderizar se ve peor (ventana
+        invisible mientras se monta el contenido).
+
+        Si el SO no soporta -alpha (raro), cambia sin animacion.
+        """
+        try:
+            self.root.attributes("-alpha", 0.55)
+        except tk.TclError:
+            screen_fn()
+            return
+        screen_fn()
+        # update_idletasks fuerza el render del contenido nuevo antes de
+        # que empiece el fade — evita ver "vacio" mientras se monta.
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+        self._fade_step_to(1.0)
+
+    def _fade_step_to(self, target, current=None, step=0.15, interval_ms=15):
+        """Avanza la opacidad del root hacia target en pasos chiquitos."""
+        if current is None:
+            try:
+                raw = self.root.attributes("-alpha")
+                current = float(raw) if raw not in (None, "") else 1.0
+            except (tk.TclError, ValueError, TypeError):
+                return
+        if current >= target:
+            try:
+                self.root.attributes("-alpha", target)
+            except tk.TclError:
+                pass
+            return
+        next_val = min(target, current + step)
+        try:
+            self.root.attributes("-alpha", next_val)
+        except tk.TclError:
+            pass
+        self.root.after(
+            interval_ms,
+            lambda: self._fade_step_to(target, next_val, step, interval_ms),
+        )
+
+    # =========================================================================
+    # Drag-and-drop a nivel root
+    # =========================================================================
 
     def _wire_root_dnd(self):
         """Registra el root window como drop target para archivos. Los drops
@@ -898,6 +1367,7 @@ class App:
 
     def show_screen1(self):
         self._clear()
+        self._current_screen = 1
         self._header(
             "Fotos Proforma",
             "Cargá una proforma en PDF y armo la carpeta de fotos para WhatsApp.",
@@ -909,7 +1379,7 @@ class App:
 
         self.s1_next_btn = CanvasButton(
             footer, text="Continuar  →",
-            command=self.show_screen2, kind="primary",
+            command=lambda: self._goto(self.show_screen2), kind="primary",
         )
         self._set_next_enabled(False)
         self.s1_next_btn.pack(side="right")
@@ -937,7 +1407,7 @@ class App:
         ).pack(anchor="w")
 
         self.s1_path_label = tk.Label(
-            inner, text="Sin archivo seleccionado.",
+            inner, text="Empezá soltando una proforma o eligiendo un archivo.",
             font=FONT_OPTION_SUB,
             bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
             wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
@@ -945,11 +1415,14 @@ class App:
         self.s1_path_label.pack(anchor="w", fill="x", pady=(4, 6))
         _bind_dynamic_wraplength(self.s1_path_label, margin=8)
 
+        # Linea informativa de formatos soportados (empty state). Sirve de
+        # "ayuda invisible": el usuario sabe sin probar que la app entiende
+        # Pepperi y los varios formatos de SAP.
         tk.Label(
             inner,
-            text="Podés elegir una o varias proformas, y agregar más después.",
+            text="Compatibles: Pepperi · SAP Factura · SAP Pedido · SAP Proforma · SAP Cotización",
             font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-        ).pack(anchor="w", pady=(0, 14))
+        ).pack(anchor="w", fill="x", pady=(0, 14))
 
         # Drop zone — bandeja con borde punteado donde se arrastran PDFs.
         # Click en cualquier parte = mismo flujo que el boton (filedialog).
@@ -957,11 +1430,15 @@ class App:
         # los Canvas widgets reciben eventos DnD de forma poco confiable),
         # ver App._wire_root_dnd. Esta bandeja solo dibuja y se pinta azul
         # cuando hay un drag-over en cualquier parte de la ventana.
+        # Cuando no hay archivos cargados la hacemos un poco mas alta (mas
+        # protagonismo en el empty state). Cuando ya hay archivos se mantiene
+        # mas compacta porque es solo un "agregar mas".
+        drop_h = 150 if not self.pdf_paths else 110
         self.s1_drop_zone = DropZone(
             inner,
             on_click=self._on_pick_pdf,
             parent_bg=SURFACE,
-            height=120,
+            height=drop_h,
         )
         self.s1_drop_zone.pack(fill="x", pady=(0, 14))
 
@@ -1050,21 +1527,20 @@ class App:
 
     def _on_dropzone_drop(self, paths):
         """Callback de DropZone cuando el usuario suelta archivos arrastrados.
-        Filtra solo PDFs que existen en disco y los suma al batch actual.
-        Si arrastran algo que no es PDF (ej. una imagen), mostramos un aviso
-        para que el usuario sepa por que no paso nada."""
+        Filtra solo PDFs que existen en disco y los suma al batch actual."""
         valid = [p for p in paths if p.lower().endswith(".pdf") and Path(p).is_file()]
         if not valid:
-            messagebox.showinfo(
-                "Sin PDF",
-                "Solo acepto archivos .pdf — arrastrá uno o varios PDFs.",
-            )
+            # Toast no intrusivo en vez de messagebox modal — el usuario
+            # solo necesita un aviso, no tiene que hacer click en OK.
+            self.toast("Solo acepto archivos .pdf")
             return
         self._add_pdf_paths(valid)
 
     def _add_pdf_paths(self, paths):
-        """Agrega PDFs a la lista actual (sin reemplazar). Parsea solo los
-        nuevos. Filtra duplicados con lo ya cargado."""
+        """Agrega PDFs a la lista actual (sin reemplazar). El parseo corre en
+        un thread para no congelar la UI (PDFs grandes pueden tardar varios
+        segundos). Mientras tanto se muestra un loading overlay con spinner.
+        Filtra duplicados con lo ya cargado."""
         if not hasattr(self, "s1_path_label") or not self.s1_path_label.winfo_exists():
             self.show_screen1()
 
@@ -1073,29 +1549,59 @@ class App:
         if not new:
             return  # ya estaban todos cargados
 
-        self.pdf_paths.extend(new)
-        for p in new:
-            entry = {"path": p}
-            try:
-                entry["parsed"] = pdf_dispatch.parse(p)
-            except pdf_parser.ParseError as e:
-                entry["error"] = str(e)
-            except Exception as e:
-                entry["error"] = f"{type(e).__name__}: {e}"
+        # Loading overlay con spinner. Texto adaptado segun cantidad.
+        loading_text = ("Leyendo proforma…" if len(new) == 1
+                        else f"Leyendo {len(new)} proformas…")
+        self._show_loading(loading_text)
+
+        # Parseo en thread daemon. Cuando termina, callbackea al main thread.
+        def _parse_in_bg(paths_to_parse=new):
+            results = []
+            for p in paths_to_parse:
+                entry = {"path": p}
+                try:
+                    entry["parsed"] = pdf_dispatch.parse(p)
+                except pdf_parser.ParseError as e:
+                    entry["error"] = str(e)
+                except Exception as e:
+                    entry["error"] = f"{type(e).__name__}: {e}"
+                results.append(entry)
+            # Volver al main thread para tocar el UI.
+            self.root.after(0, lambda: self._on_parse_done(paths_to_parse, results))
+
+        threading.Thread(target=_parse_in_bg, daemon=True).start()
+
+    def _on_parse_done(self, new_paths, new_entries):
+        """Callback en main thread cuando termina el parseo en background.
+        Aplica los resultados al estado, oculta loading, muestra toast de
+        confirmacion o error si correspondia."""
+        self._hide_loading()
+
+        # Si la pantalla cambio mientras parseabamos (raro pero posible),
+        # solo aplicamos el estado pero no re-renderizamos.
+        self.pdf_paths.extend(new_paths)
+        for entry in new_entries:
             self.parsed_data_list.append(entry)
-            # Crear StringVar para este PDF si parseo OK, con el cliente
-            # detectado como default. Solo si no existe ya (pegajoso entre
-            # adiciones/back-forward).
+            p = entry["path"]
             if "parsed" in entry and p not in self.client_override_vars:
                 detected = entry["parsed"].get("client") or ""
                 self.client_override_vars[p] = tk.StringVar(value=detected)
 
-        # Si todos los archivos (viejos + nuevos) fallaron, mostrar error.
+        # Si TODOS los archivos cargados fallaron, error modal (es bloqueante,
+        # el usuario tiene que reaccionar).
         errored = [e for e in self.parsed_data_list if "error" in e]
         if errored and len(errored) == len(self.parsed_data_list):
             messagebox.showerror("No pude leer los PDFs", errored[0]["error"])
+        else:
+            # Toast de confirmacion no intrusivo.
+            ok_count = sum(1 for e in new_entries if "parsed" in e)
+            if ok_count == 1:
+                self.toast("Proforma cargada")
+            elif ok_count > 1:
+                self.toast(f"{ok_count} proformas cargadas")
 
-        self._render_s1_info()
+        if hasattr(self, "s1_path_label") and self.s1_path_label.winfo_exists():
+            self._render_s1_info()
 
     def _clear_pdf_paths(self):
         """Vacía la lista de PDFs cargados."""
@@ -1131,7 +1637,10 @@ class App:
         self._render_s1_pick_buttons()
 
         if not self.parsed_data_list:
-            self.s1_path_label.configure(text="Sin archivo seleccionado.", fg=TEXT_LIGHT)
+            self.s1_path_label.configure(
+                text="Empezá soltando una proforma o eligiendo un archivo.",
+                fg=TEXT_LIGHT,
+            )
             self.s1_info_card.pack_forget()
             self._set_next_enabled(False)
             return
@@ -1319,6 +1828,7 @@ class App:
 
     def show_screen2(self):
         self._clear()
+        self._current_screen = 2
         n = len(self.pdf_paths)
         if n == 1:
             subtitle = f"PDF: {Path(self.pdf_paths[0]).name}"
@@ -1334,7 +1844,7 @@ class App:
 
         CanvasButton(
             footer, text="←  Volver",
-            command=self.show_screen1, kind="secondary",
+            command=lambda: self._goto(self.show_screen1), kind="secondary",
         ).pack(side="left")
 
         CanvasButton(
@@ -1474,7 +1984,8 @@ class App:
         self._batch_results = []
         self._batch_errors = []
         self.results = []
-        self.show_screen3_processing()
+        # Fade-in al entrar a pantalla 3 — accion de usuario.
+        self._goto(self.show_screen3_processing)
 
         def run():
             for idx, (entry, folder_name) in enumerate(zip(ok_entries, explicit_names), 1):
@@ -1567,6 +2078,7 @@ class App:
 
     def show_screen3_processing(self):
         self._clear()
+        self._current_screen = "processing"
         self._header(
             "Procesando",
             "Buscando fotos en Dropbox y copiando al escritorio.",
@@ -1624,6 +2136,7 @@ class App:
 
     def show_screen3_result(self):
         self._clear()
+        self._current_screen = "result"
         self.s3_canvas = None
         self.s3_pct_label = None
         self.s3_count_label = None
@@ -1653,7 +2166,7 @@ class App:
 
         CanvasButton(
             footer, text="←  Volver",
-            command=self._back_to_filters, kind="secondary",
+            command=lambda: self._goto(self._back_to_filters), kind="secondary",
         ).pack(side="left")
 
         CanvasButton(
@@ -1663,7 +2176,7 @@ class App:
 
         CanvasButton(
             footer, text="Procesar otra",
-            command=self._reset_to_start, kind="secondary",
+            command=lambda: self._goto(self._reset_to_start), kind="secondary",
         ).pack(side="right", padx=(0, 8))
 
         body = tk.Frame(self.container, bg=BG)
@@ -1755,7 +2268,7 @@ class App:
         footer.pack(side="bottom", fill="x", padx=SCREEN_PADX, pady=24)
         CanvasButton(
             footer, text="←  Volver",
-            command=self._back_to_filters, kind="secondary",
+            command=lambda: self._goto(self._back_to_filters), kind="secondary",
         ).pack(side="left")
         CanvasButton(
             footer, text="Abrir todas  →",
@@ -1763,7 +2276,7 @@ class App:
         ).pack(side="right")
         CanvasButton(
             footer, text="Procesar otra",
-            command=self._reset_to_start, kind="secondary",
+            command=lambda: self._goto(self._reset_to_start), kind="secondary",
         ).pack(side="right", padx=(0, 8))
 
         body = tk.Frame(self.container, bg=BG)
@@ -2159,26 +2672,10 @@ class App:
 
     def run(self):
         # Setup ya terminó. Aplicamos un update_idletasks() para materializar
-        # los widgets, centramos en pantalla (con bias hacia arriba para
-        # evitar que el Dock tape la parte de abajo), y mostramos la ventana
-        # (estaba withdrew()-eada desde __init__).
+        # los widgets y aplicamos el tamaño/posicion guardado de la sesion
+        # anterior (o el default centrado si es primer arranque).
         self.root.update_idletasks()
-
-        # Posicionar la ventana centrada en el AREA USABLE (descontando
-        # menu bar y Dock). Si el window es más alto que el área usable,
-        # lo pegamos arriba para que al menos el header sea visible.
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        MENU_BAR = 28
-        DOCK = 90  # estimación conservadora
-        usable_h = screen_h - MENU_BAR - DOCK
-
-        x = max(0, (screen_w - WINDOW_W) // 2)
-        if WINDOW_H >= usable_h:
-            y = MENU_BAR + 5  # pegada arriba, mejor que pegada abajo
-        else:
-            y = MENU_BAR + (usable_h - WINDOW_H) // 2
-        self.root.geometry(f"{WINDOW_W}x{WINDOW_H}+{x}+{y}")
+        self._restore_geometry()
         self.root.deiconify()
         self.root.lift()
         self.root.mainloop()
