@@ -35,13 +35,29 @@ import platform_utils
 # mecanismo de macOS y ya esta soportado). Si tkinterdnd2 no esta instalado
 # o no carga (raro pero puede pasar en algun build viejo) seguimos andando
 # con el boton clasico: la drop zone queda visible pero solo clickeable.
+_DND_IMPORT_ERROR = None
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
     DND_AVAILABLE = True
-except Exception:
+except Exception as _e:
     TkinterDnD = None
     DND_FILES = None
     DND_AVAILABLE = False
+    _DND_IMPORT_ERROR = repr(_e)
+
+
+def _log_event(msg):
+    """Escribe una linea al log de la app — diagnostico para drag-and-drop
+    y otros eventos no-criticos. Falla en silencio si no se puede escribir
+    (no queremos que el logueo crashee la app)."""
+    try:
+        import datetime
+        log_path = platform_utils.app_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -289,16 +305,18 @@ class DropZone(tk.Canvas):
         # modulo arriba — el cursor queda el del sistema en todos lados).
 
         # Registrar como drop target — soft fail si tkinterdnd2 no esta.
+        # Logueamos el resultado para diagnosticar problemas en empaquetado.
         if DND_AVAILABLE:
             try:
                 self.drop_target_register(DND_FILES)
                 self.dnd_bind("<<DropEnter>>", self._on_drag_enter)
                 self.dnd_bind("<<DropLeave>>", self._on_drag_leave)
                 self.dnd_bind("<<Drop>>", self._on_drop_event)
-            except Exception:
-                # Si por algun motivo el registro falla, seguimos con la
-                # bandeja solo-clickeable (no crashea la app).
-                pass
+                _log_event("DnD: DropZone registrada OK")
+            except Exception as e:
+                _log_event(
+                    f"DnD: drop_target_register FAIL — {type(e).__name__}: {e}"
+                )
 
     def _draw(self):
         self.delete("all")
@@ -586,9 +604,22 @@ class App:
         # Usamos TkinterDnD.Tk en vez de tk.Tk para habilitar drag-and-drop
         # de archivos a la ventana. Es una subclase 100% compatible: todo el
         # resto del codigo lo usa como un tk.Tk normal.
+        # Si TkinterDnD.Tk() crashea (libs nativas tkdnd no cargan en este
+        # binario empaquetado), caemos a tk.Tk() y dejamos el motivo en el
+        # log para diagnostico.
+        self.dnd_active = False
         if DND_AVAILABLE:
-            self.root = TkinterDnD.Tk()
+            try:
+                self.root = TkinterDnD.Tk()
+                self.dnd_active = True
+                _log_event("DnD: TkinterDnD.Tk() OK")
+            except Exception as e:
+                _log_event(f"DnD: TkinterDnD.Tk() FAIL — {type(e).__name__}: {e}")
+                self.root = tk.Tk()
         else:
+            _log_event(
+                f"DnD: tkinterdnd2 no se pudo importar — {_DND_IMPORT_ERROR}"
+            )
             self.root = tk.Tk()
         # Atrapar excepciones que ocurren dentro de callbacks de tk
         # (clicks, eventos UI, etc) para que queden logueadas y el usuario
