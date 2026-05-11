@@ -285,11 +285,8 @@ class DropZone(tk.Canvas):
         self.bind("<Configure>", lambda e: self._draw())
         # Click en cualquier parte de la zona = abrir filedialog.
         self.bind("<Button-1>", self._on_click)
-        # Cursor "mano" en mac/win/linux para indicar clickeable.
-        try:
-            self.configure(cursor="hand2")
-        except tk.TclError:
-            pass
+        # NO customizamos el cursor: regla del proyecto (ver docstring del
+        # modulo arriba — el cursor queda el del sistema en todos lados).
 
         # Registrar como drop target — soft fail si tkinterdnd2 no esta.
         if DND_AVAILABLE:
