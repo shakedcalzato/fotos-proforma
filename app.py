@@ -31,6 +31,18 @@ import dropbox as dropbox_mod
 import settings as user_settings
 import platform_utils
 
+# Drag-and-drop dentro de la ventana (no al icono de la app, eso es otro
+# mecanismo de macOS y ya esta soportado). Si tkinterdnd2 no esta instalado
+# o no carga (raro pero puede pasar en algun build viejo) seguimos andando
+# con el boton clasico: la drop zone queda visible pero solo clickeable.
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    DND_AVAILABLE = True
+except Exception:
+    TkinterDnD = None
+    DND_FILES = None
+    DND_AVAILABLE = False
+
 
 # =============================================================================
 # Paleta
@@ -237,6 +249,166 @@ class CanvasButton(tk.Canvas):
 
 
 # =============================================================================
+# DropZone - bandeja con borde punteado para arrastrar archivos
+# =============================================================================
+
+class DropZone(tk.Canvas):
+    """Bandeja visual con borde punteado donde se arrastran PDFs.
+
+    Acepta:
+    - Drops desde Finder/Explorer (via tkinterdnd2 si esta disponible).
+    - Clicks (abre el filedialog, igual que el boton de abajo) — asi
+      la zona NO es solo decorativa para usuarios sin DnD.
+
+    Estados visuales:
+    - Idle:        borde gris, texto neutro.
+    - Drag-over:   borde y texto azul ACCENT, fondo tintado.
+    """
+
+    def __init__(self, parent, on_drop, on_click, width=None, height=130,
+                 parent_bg=BG):
+        # Si no nos pasan width, ocupamos lo que el parent nos de.
+        kwargs = {"height": height, "bg": parent_bg,
+                  "highlightthickness": 0, "bd": 0}
+        if width is not None:
+            kwargs["width"] = width
+        super().__init__(parent, **kwargs)
+
+        self.on_drop = on_drop
+        self.on_click = on_click
+        self._height = height
+        self._hover = False
+        self._parent_bg = parent_bg
+
+        # Redibujamos cuando cambia el tamaño (importante: el width real
+        # del Canvas lo conocemos recien despues del primer layout).
+        self.bind("<Configure>", lambda e: self._draw())
+        # Click en cualquier parte de la zona = abrir filedialog.
+        self.bind("<Button-1>", self._on_click)
+        # Cursor "mano" en mac/win/linux para indicar clickeable.
+        try:
+            self.configure(cursor="hand2")
+        except tk.TclError:
+            pass
+
+        # Registrar como drop target — soft fail si tkinterdnd2 no esta.
+        if DND_AVAILABLE:
+            try:
+                self.drop_target_register(DND_FILES)
+                self.dnd_bind("<<DropEnter>>", self._on_drag_enter)
+                self.dnd_bind("<<DropLeave>>", self._on_drag_leave)
+                self.dnd_bind("<<Drop>>", self._on_drop_event)
+            except Exception:
+                # Si por algun motivo el registro falla, seguimos con la
+                # bandeja solo-clickeable (no crashea la app).
+                pass
+
+    def _draw(self):
+        self.delete("all")
+        w = self.winfo_width()
+        if w <= 1:  # aun no layouteado
+            return
+        h = self._height
+
+        if self._hover:
+            border_color = ACCENT
+            fill_color = ACCENT_TINT
+            text_color = ACCENT
+            title = "Soltá el PDF para cargarlo"
+            sub = ""
+        else:
+            border_color = BORDER_STRONG
+            fill_color = SURFACE
+            text_color = TEXT_MUTED
+            title = "Arrastrá tu proforma PDF aquí"
+            sub = ("o hacé click para elegirla"
+                   if DND_AVAILABLE
+                   else "Hacé click para elegir un archivo")
+
+        # Rectangulo con borde punteado. tk Canvas no soporta dashed en
+        # create_rectangle con fill simultaneamente en todos los backends,
+        # asi que dibujamos:
+        # 1) un rectangulo plano para el fondo (sin outline)
+        # 2) 4 lineas dashed encima para el "borde"
+        pad = 6
+        self.create_rectangle(
+            pad, pad, w - pad, h - pad,
+            outline="", fill=fill_color,
+        )
+        dash = (5, 4)
+        line_kwargs = {"fill": border_color, "width": 2, "dash": dash}
+        # Top
+        self.create_line(pad, pad, w - pad, pad, **line_kwargs)
+        # Bottom
+        self.create_line(pad, h - pad, w - pad, h - pad, **line_kwargs)
+        # Left
+        self.create_line(pad, pad, pad, h - pad, **line_kwargs)
+        # Right
+        self.create_line(w - pad, pad, w - pad, h - pad, **line_kwargs)
+
+        # Texto centrado
+        cx = w / 2
+        if sub:
+            self.create_text(
+                cx, h / 2 - 10, text=title,
+                fill=text_color, font=FONT_BODY_BOLD,
+            )
+            self.create_text(
+                cx, h / 2 + 14, text=sub,
+                fill=TEXT_LIGHT, font=FONT_CAPTION,
+            )
+        else:
+            self.create_text(
+                cx, h / 2, text=title,
+                fill=text_color, font=FONT_BODY_BOLD,
+            )
+
+    def _on_click(self, _event=None):
+        if self.on_click:
+            self.on_click()
+
+    def _on_drag_enter(self, _event):
+        self._hover = True
+        self._draw()
+
+    def _on_drag_leave(self, _event):
+        self._hover = False
+        self._draw()
+
+    def _on_drop_event(self, event):
+        self._hover = False
+        self._draw()
+        paths = self._parse_dnd_paths(event.data)
+        if paths and self.on_drop:
+            self.on_drop(paths)
+
+    @staticmethod
+    def _parse_dnd_paths(data):
+        """tkinterdnd2 entrega los paths en un solo string tipo TCL list:
+        - Sin espacios:        'C:/x/y.pdf C:/a/b.pdf'
+        - Con espacios:        '{C:/My Stuff/x.pdf} {/Users/x/y z.pdf}'
+        - Mezcla:              'simple.pdf {/path con espacios.pdf}'
+        - Linux KDE/GNOME:     'file:///path/to/x.pdf'
+        Parseamos los formatos y filtramos solo .pdf.
+        """
+        if not data:
+            return []
+        import re
+        from urllib.parse import unquote
+        paths = []
+        # Captura {grupos entre llaves} o tokens sin espacios.
+        for m in re.finditer(r"\{([^}]*)\}|(\S+)", data):
+            p = m.group(1) if m.group(1) is not None else m.group(2)
+            if not p:
+                continue
+            # Algunos entornos mandan file:// URIs en lugar de paths planos.
+            if p.startswith("file://"):
+                p = unquote(p[len("file://"):])
+            paths.append(p)
+        return [p for p in paths if p.lower().endswith(".pdf")]
+
+
+# =============================================================================
 # Card - frame blanco con borde sutil
 # =============================================================================
 
@@ -414,7 +586,13 @@ class SegmentedControl(tk.Frame):
 
 class App:
     def __init__(self):
-        self.root = tk.Tk()
+        # Usamos TkinterDnD.Tk en vez de tk.Tk para habilitar drag-and-drop
+        # de archivos a la ventana. Es una subclase 100% compatible: todo el
+        # resto del codigo lo usa como un tk.Tk normal.
+        if DND_AVAILABLE:
+            self.root = TkinterDnD.Tk()
+        else:
+            self.root = tk.Tk()
         # Atrapar excepciones que ocurren dentro de callbacks de tk
         # (clicks, eventos UI, etc) para que queden logueadas y el usuario
         # vea algo útil en lugar de un cuelgue silencioso.
@@ -676,6 +854,18 @@ class App:
             font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
         ).pack(anchor="w", pady=(0, 14))
 
+        # Drop zone — bandeja con borde punteado donde se arrastran PDFs.
+        # Click en cualquier parte = mismo flujo que el boton (filedialog).
+        # Drop = agrega los PDFs arrastrados al batch actual.
+        self.s1_drop_zone = DropZone(
+            inner,
+            on_drop=self._on_dropzone_drop,
+            on_click=self._on_pick_pdf,
+            parent_bg=SURFACE,
+            height=120,
+        )
+        self.s1_drop_zone.pack(fill="x", pady=(0, 14))
+
         # Fila de botones (Seleccionar / Agregar + Limpiar). La etiqueta del
         # primer boton y la visibilidad del Limpiar dependen de si ya hay
         # archivos cargados — se re-renderiza en _render_s1_info().
@@ -758,6 +948,20 @@ class App:
         if not paths:
             return
         self._add_pdf_paths(list(paths))
+
+    def _on_dropzone_drop(self, paths):
+        """Callback de DropZone cuando el usuario suelta archivos arrastrados.
+        Filtra solo PDFs que existen en disco y los suma al batch actual.
+        Si arrastran algo que no es PDF (ej. una imagen), mostramos un aviso
+        para que el usuario sepa por que no paso nada."""
+        valid = [p for p in paths if p.lower().endswith(".pdf") and Path(p).is_file()]
+        if not valid:
+            messagebox.showinfo(
+                "Sin PDF",
+                "Solo acepto archivos .pdf — arrastrá uno o varios PDFs.",
+            )
+            return
+        self._add_pdf_paths(valid)
 
     def _add_pdf_paths(self, paths):
         """Agrega PDFs a la lista actual (sin reemplazar). Parsea solo los

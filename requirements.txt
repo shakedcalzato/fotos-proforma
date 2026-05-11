@@ -1,1 +1,2 @@
 pdfplumber>=0.11
+tkinterdnd2>=0.4.2
