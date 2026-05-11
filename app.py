@@ -1395,9 +1395,10 @@ class App:
             font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT,
         ).pack(side="left")
 
-        # Body con scrollable area si hace falta (por ahora sin scroll)
-        body = tk.Frame(self.container, bg=BG)
-        body.pack(fill="both", expand=True, padx=SCREEN_PADX)
+        # Body scrolleable (igual que pantalla 2): si la card "Resumen" tiene
+        # muchas marcas detectadas, la lista se desborda y el usuario necesita
+        # scroll para ver todo.
+        body = self._make_scrollable_body(self.container, padx=SCREEN_PADX)
 
         # Card 1 - selección de archivo
         self.s1_card = Card(body)
@@ -1460,6 +1461,12 @@ class App:
 
         if self.parsed_data:
             self._render_s1_info()
+
+        # Bindeamos el scroll wheel a todos los descendientes del body
+        # scrolleable (igual que pantalla 2). Sin esto, la rueda del mouse
+        # solo scrollea cuando el cursor esta sobre el Canvas, no sobre
+        # las cards adentro.
+        self._bind_scroll_wheel_to_descendants(body)
 
     def _set_next_enabled(self, enabled):
         self.s1_next_btn.set_enabled(enabled)
@@ -1672,6 +1679,12 @@ class App:
         # Boton siguiente: habilitado si hay al menos 1 PDF parseado OK
         ok = any("parsed" in e for e in self.parsed_data_list)
         self._set_next_enabled(ok)
+
+        # Re-bindear scroll wheel a los hijos nuevos de s1_info_card —
+        # el body scrolleable necesita que cada descendiente tenga el
+        # handler para que el scroll wheel funcione hovereando cualquier
+        # parte. _bind_scroll_wheel_to_descendants ya hace recursion.
+        self._bind_scroll_wheel_to_descendants(self.s1_info_card)
 
     def _render_s1_single_info(self):
         """Renderiza el resumen para 1 PDF (formato detallado de siempre)."""
