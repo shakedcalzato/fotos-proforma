@@ -39,8 +39,11 @@ test_pdfs/
 test_data/
 sample_proformas/
 *.pdf
-# .icns no van al repo (los regeneramos)
+# .icns en general no van al repo, EXCEPTO AppIcon.icns que es el
+# ícono oficial que necesita el workflow build-mac.yml para empaquetar
+# el .app con el ícono correcto.
 *.icns
+!AppIcon.icns
 AppIcon.iconset/
 
 # ---- Logs y archivos generados en runtime ----

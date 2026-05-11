@@ -1,0 +1,69 @@
+name: Build Mac .app
+
+# Cuándo correr este workflow:
+on:
+  # En cada push a main (cuando subís cambios)
+  push:
+    branches: [main]
+  # Botón "Run workflow" manual desde la UI de GitHub Actions
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compile .app with PyInstaller
+    # macos-latest es Apple Silicon (M-series) — los binarios saldrán arm64.
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar a .app
+        run: |
+          pyinstaller \
+            --windowed \
+            --onedir \
+            --name FotosProforma \
+            --icon AppIcon.icns \
+            --osx-bundle-identifier com.calzato.fotosproforma \
+            --noconfirm \
+            main.py
+        # --windowed:                sin ventana de terminal, genera .app
+        # --onedir:                  formato directorio (el correcto para .app de Mac)
+        # --name FotosProforma:      nombre que aparece en el Dock
+        # --icon AppIcon.icns:       ícono que ve el usuario en Finder/Dock
+        # --osx-bundle-identifier:   ID único para LaunchServices/preferencias
+
+      - name: Listar archivos generados (debug)
+        run: ls -la dist/
+
+      - name: Comprimir .app en .zip
+        # Los .app son directorios y GitHub Actions no permite subir
+        # directorios directos como artifact — los aplana. Por eso
+        # zipeamos primero para preservar la estructura del bundle.
+        run: |
+          cd dist
+          zip -r -y FotosProforma-Mac.zip FotosProforma.app
+          ls -la FotosProforma-Mac.zip
+        # -y preserva symlinks (importante para el bundle de PyInstaller)
+
+      - name: Subir .zip como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FotosProforma-Mac
+          path: dist/FotosProforma-Mac.zip
+          retention-days: 90
+          # El artifact queda disponible 90 días para descargar desde
+          # la página del workflow run en GitHub.
