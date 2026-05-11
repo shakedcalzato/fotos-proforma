@@ -110,8 +110,16 @@ FONT_MONO           = ("Menlo", 12)
 # Geometria
 # =============================================================================
 
-WINDOW_W = 760
-WINDOW_H = 800   # cabe en pantalla del usuario (982 - menubar 28 - dock ~80 = ~874 usable)
+# Tamaño inicial al abrir la app. El usuario puede agarrar las esquinas y
+# cambiar tamaño libremente (la ventana es redimensionable). Estos valores
+# son SOLO el default que se aplica al primer arranque.
+WINDOW_W = 800
+WINDOW_H = 650
+
+# Tamaño minimo para que el UI no se rompa. Por debajo de esto los textos
+# largos se solapan, los botones quedan apretados, etc.
+WINDOW_W_MIN = 600
+WINDOW_H_MIN = 500
 
 APP_VERSION = "1.0"
 
@@ -170,6 +178,29 @@ def _round_rect_pts(x1, y1, x2, y2, r):
         x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
         x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
     ]
+
+
+def _bind_dynamic_wraplength(label, margin=0, min_wrap=200):
+    """Hace que el wraplength del label siga su ancho real cuando la ventana
+    se redimensiona. Es la pieza que permite que textos largos se reflowen
+    cuando el usuario agranda la ventana.
+
+    El label tiene que estar empaquetado con fill='x' (sino su ancho es el
+    del texto, no del parent, y el wrap no tiene sentido).
+
+    margin: pixeles a restar del ancho — util si el label tiene padding interno.
+    min_wrap: minimo wraplength para evitar valores absurdos durante layout.
+    """
+    def _on_configure(event):
+        new_wrap = max(min_wrap, event.width - margin)
+        # Evitar loops: solo aplicar si cambia significativamente.
+        try:
+            current = int(label.cget("wraplength"))
+        except (ValueError, TypeError):
+            current = 0
+        if abs(new_wrap - current) > 4:
+            label.configure(wraplength=new_wrap)
+    label.bind("<Configure>", _on_configure)
 
 
 class CanvasButton(tk.Canvas):
@@ -611,10 +642,13 @@ class App:
         # con el tamaño correcto ya aplicado.
         self.root.withdraw()
         self.root.title("Fotos Proforma")
-        self.root.resizable(False, False)
+        # Ventana redimensionable como cualquier app moderna. El usuario puede
+        # agarrar las esquinas y agrandarla; el contenido se adapta gracias a
+        # pack(fill=...) y a los wraplengths dinamicos (_bind_dynamic_wraplength).
+        self.root.resizable(True, True)
         self.root.configure(bg=BG)
-        self.root.minsize(WINDOW_W, WINDOW_H)
-        self.root.maxsize(WINDOW_W, WINDOW_H)
+        self.root.minsize(WINDOW_W_MIN, WINDOW_H_MIN)
+        # Sin maxsize: la app se puede maximizar libremente.
         self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
 
         # Cargar preferencias guardadas (modo, no_ind, dest_root)
@@ -761,13 +795,15 @@ class App:
         wrap.pack(fill="x", pady=(22, 14), padx=SCREEN_PADX)
         tk.Label(
             wrap, text=title, font=FONT_DISPLAY, bg=BG, fg=TEXT, anchor="w",
-        ).pack(anchor="w")
+        ).pack(anchor="w", fill="x")
         if subtitle:
-            tk.Label(
+            sub = tk.Label(
                 wrap, text=subtitle, font=FONT_SUBTITLE,
                 bg=BG, fg=TEXT_MUTED, anchor="w", justify="left",
                 wraplength=WINDOW_W - 2 * SCREEN_PADX,
-            ).pack(anchor="w", pady=(4, 0))
+            )
+            sub.pack(anchor="w", fill="x", pady=(4, 0))
+            _bind_dynamic_wraplength(sub)
 
     def _section_label(self, parent, text):
         return tk.Label(
@@ -906,7 +942,8 @@ class App:
             bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
             wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
         )
-        self.s1_path_label.pack(anchor="w", pady=(4, 6))
+        self.s1_path_label.pack(anchor="w", fill="x", pady=(4, 6))
+        _bind_dynamic_wraplength(self.s1_path_label, margin=8)
 
         tk.Label(
             inner,
@@ -1128,11 +1165,13 @@ class App:
                 inner, text="Error", font=FONT_BODY_BOLD,
                 bg=SURFACE, fg=ERROR, anchor="w",
             ).pack(anchor="w")
-            tk.Label(
+            err_lbl = tk.Label(
                 inner, text=entry["error"], font=FONT_BODY,
                 bg=SURFACE, fg=TEXT_MUTED, anchor="w", justify="left",
                 wraplength=WINDOW_W - 2 * SCREEN_PADX - 60,
-            ).pack(anchor="w", pady=(4, 0))
+            )
+            err_lbl.pack(anchor="w", fill="x", pady=(4, 0))
+            _bind_dynamic_wraplength(err_lbl, margin=8)
             return
 
         parsed = entry["parsed"]
@@ -1510,11 +1549,21 @@ class App:
             self.s3_count_label.configure(text=f"{current} de {total}")
         if self.s3_msg_label and self.s3_msg_label.winfo_exists():
             self.s3_msg_label.configure(text=msg)
-        if self.s3_canvas and self.s3_canvas.winfo_exists():
-            ratio = (current / total) if total else 0
-            ratio = max(0.0, min(1.0, ratio))
-            w = int(self.s3_canvas.winfo_width() * ratio)
-            self.s3_canvas.coords(self.s3_bar, 0, 0, w, 6)
+        # Guardamos el ratio para poder redibujar la barra cuando la ventana
+        # se redimensiona (ver _redraw_progress_bar).
+        ratio = (current / total) if total else 0
+        self._progress_ratio = max(0.0, min(1.0, ratio))
+        self._redraw_progress_bar()
+
+    def _redraw_progress_bar(self):
+        """Redibuja la barra de progreso usando el ratio guardado. Se llama
+        desde _update_progress (cuando avanza el proceso) y desde el handler
+        <Configure> del canvas (cuando el usuario redimensiona la ventana)."""
+        if not (self.s3_canvas and self.s3_canvas.winfo_exists()):
+            return
+        ratio = getattr(self, "_progress_ratio", 0.0)
+        w = int(self.s3_canvas.winfo_width() * ratio)
+        self.s3_canvas.coords(self.s3_bar, 0, 0, w, 6)
 
     def show_screen3_processing(self):
         self._clear()
@@ -1550,13 +1599,17 @@ class App:
         self.s3_bar = self.s3_canvas.create_rectangle(
             0, 0, 0, 6, fill=ACCENT, width=0,
         )
+        # Redibujar la barra cuando el canvas cambia de ancho (resize de ventana)
+        # — mantiene el porcentaje proporcional al nuevo ancho.
+        self.s3_canvas.bind("<Configure>", lambda e: self._redraw_progress_bar())
 
         self.s3_msg_label = tk.Label(
             inner, text="Iniciando…", font=FONT_CAPTION,
             bg=SURFACE, fg=TEXT_MUTED, anchor="w",
             wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
         )
-        self.s3_msg_label.pack(anchor="w")
+        self.s3_msg_label.pack(anchor="w", fill="x")
+        _bind_dynamic_wraplength(self.s3_msg_label, margin=8)
 
     def _on_processing_done(self, res, exc):
         if exc:
@@ -1640,12 +1693,14 @@ class App:
         di = tk.Frame(dest_card, bg=SURFACE)
         di.pack(padx=24, pady=18, fill="x")
         tk.Label(di, text="CARPETA DESTINO", font=FONT_SECTION_LABEL,
-                 bg=SURFACE, fg=TEXT_LIGHT, anchor="w").pack(anchor="w")
-        tk.Label(
+                 bg=SURFACE, fg=TEXT_LIGHT, anchor="w").pack(anchor="w", fill="x")
+        dest_lbl = tk.Label(
             di, text=str(dest), font=FONT_BODY,
             bg=SURFACE, fg=TEXT, anchor="w",
             wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        dest_lbl.pack(anchor="w", fill="x", pady=(4, 0))
+        _bind_dynamic_wraplength(dest_lbl, margin=8)
 
         # Lista de faltantes scrolleable + boton "Copiar todos"
         if missing:
