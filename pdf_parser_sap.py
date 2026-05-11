@@ -46,21 +46,31 @@ from pdf_parser import ParseError
 
 
 # --- Regex --------------------------------------------------------------------
+#
+# SAP tiene 2 layouts de tabla distintos que comparten parser:
+#
+# (1) "ctns" — Factura de Cliente / Pedido tipo Jase
+#     Columnas: Codigo Descripción Tallas Color Cantidad Ctns Precio Total Foto
+#     Línea:    GP15094/A/BLK Calzados de Damas Dama 35-40 Black 72 6 $ 8.00 $ 576.00
+#     - Código AL INICIO de la línea
+#     - Qty pattern: int int $ X.XX $ Y.YY (al final)
+#
+# (2) "bultos" — Factura / Proforma con columna Bultos Peso Volumen
+#     Columnas: Bultos Peso Volumen Referencia Descripción Color Talla Cant(Pares) Precio Total
+#     Línea:    10 165.960 1.800 BB001/B/SURTIDO Sandalias para Damas SURTIDO Dama 36 - 41 360 3.75 $ 1,350.00
+#     - Código en el MEDIO de la línea (después de Bultos, Peso, Volumen)
+#     - Qty pattern: int decimal $ Y.YY (al final, sin $ en el precio)
 
-# Código al inicio de línea: 2-4 letras (prefijo marca) + dígitos +
-# /A o /B (variante) + barra + letras (color).
-# El [A-Z]+ es greedy: si el código es "SURTIDOZapatillas", capturará
-# "SURTIDOZ" porque la Z (de Zapatillas) también es uppercase. El caller
-# detecta este caso y trimea el último char (ver _parse_product_line).
-_CODE_RE = re.compile(r"^([A-Z]{2,4}\d+/[AB]/[A-Z]+)")
+# Layout "ctns": código al inicio
+_CTNS_CODE_RE = re.compile(r"^([A-Z]{2,4}\d+/[AB]/[A-Z]+)")
+_CTNS_QTY_RE = re.compile(r"(\d+)\s+\d+\s+\$\s*[\d.,]+\s+\$\s*[\d.,]+\s*$")
 
-# Cantidad: entero, seguido de otro entero (ctns), seguido de $ precio,
-# seguido de $ total, al FINAL de la línea. Los precios pueden tener
-# coma como separador de miles ("$ 1,674.00").
-# El primer grupo capturado es la cantidad de pares.
-_QTY_RE = re.compile(
-    r"(\d+)\s+\d+\s+\$\s*[\d.,]+\s+\$\s*[\d.,]+\s*$"
-)
+# Layout "bultos": código en cualquier parte de la línea (precedido por
+# word boundary). Para el caso de description pegada al codigo (poco común
+# en este layout), igualmente aplicamos el trim de última letra si después
+# del match viene minúscula.
+_BULTOS_CODE_RE = re.compile(r"\b([A-Z]{2,4}\d+/[AB]/[A-Z]+)")
+_BULTOS_QTY_RE = re.compile(r"(\d+)\s+[\d.,]+\s+\$\s*[\d.,]+\s*$")
 
 # Cliente: "Cliente CR23-44 INVERSIONES JASE HP S.R.L. Fecha Vencimiento:"
 # Capturamos el nombre del cliente (entre el código y "Fecha Vencimiento").
@@ -93,6 +103,7 @@ def parse(path):
     client = None
     seen_skus = set()
     fmt = "sap_factura"  # default
+    table_layout = "ctns"  # default
 
     with pdf:
         if getattr(pdf, "is_encrypted", False):
@@ -104,6 +115,21 @@ def parse(path):
             fmt = "sap_factura"
         elif "fecha del pedido" in first_text_lower or "pedido en hold" in first_text_lower:
             fmt = "sap_pedido"
+
+        # Detectar layout de tabla por el header de columnas:
+        # - "ctns": Codigo Descripción ... Ctns Precio Total
+        #   Código al INICIO de la línea de producto.
+        # - "bultos": Bultos Peso Volumen Referencia Descripción ...
+        #   Código en el MEDIO (después de Bultos/Peso/Volumen).
+        # Algunas "Factura de Cliente" usan ctns y otras usan bultos, asi
+        # que detectamos por la presencia de columnas Bultos/Peso/Volumen
+        # juntas en el texto.
+        if (
+            "bultos" in first_text_lower
+            and "peso" in first_text_lower
+            and "volumen" in first_text_lower
+        ):
+            table_layout = "bultos"
 
         for page in pdf.pages:
             text = page.extract_text() or ""
@@ -118,7 +144,7 @@ def parse(path):
 
             # Productos: cada línea que matchee el regex.
             for line in text.split("\n"):
-                item = _parse_product_line(line)
+                item = _parse_product_line(line, table_layout)
                 if item is None:
                     continue
                 # Dedup: el header se repite en cada página pero los productos
@@ -146,15 +172,30 @@ def parse(path):
 
 # --- Helpers internos ---------------------------------------------------------
 
-def _parse_product_line(line):
+def _parse_product_line(line, table_layout="ctns"):
     """Intenta parsear UNA línea como un item de producto.
     Devuelve dict del item o None si la línea no es un producto.
+
+    Args:
+        line: línea cruda extraída del PDF.
+        table_layout: "ctns" (código al inicio) o "bultos" (código en
+                      cualquier parte de la línea, precedido por columnas
+                      Bultos/Peso/Volumen).
     """
     line = line.strip()
     if not line:
         return None
 
-    m = _CODE_RE.match(line)
+    # Seleccionar regex según el layout de tabla detectado.
+    if table_layout == "bultos":
+        # Código en el medio de la línea: usar search (no match).
+        m = _BULTOS_CODE_RE.search(line)
+        qty_re = _BULTOS_QTY_RE
+    else:
+        # Código al inicio: usar match.
+        m = _CTNS_CODE_RE.match(line)
+        qty_re = _CTNS_QTY_RE
+
     if not m:
         return None
 
@@ -179,7 +220,7 @@ def _parse_product_line(line):
     # Extraer cantidad del resto de la línea.
     rest = line[end_pos:]
     qty = 0
-    qm = _QTY_RE.search(rest)
+    qm = qty_re.search(rest)
     if qm:
         try:
             qty = int(qm.group(1))
