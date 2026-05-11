@@ -28,7 +28,8 @@ import shutil
 from pathlib import Path
 
 from brands import parse_sku, base_filename, full_filename, is_surtido
-import pdf_parser
+import pdf_parser       # mantenido por compat: ParseError + smoke tests
+import pdf_dispatch     # detecta el formato y dispatches al parser correcto
 import finder
 import dropbox as dropbox_mod
 
@@ -166,29 +167,47 @@ def _format_copy_error(exc, src, target):
     return f"Error al copiar: {exc}"
 
 
-def _copy_to_dest(src, dest, missing, item):
-    """Copia src -> dest/<nombre>, evitando colisiones con sufijo numerico.
-    Si falla la copia, registra en missing (si item no es None) y devuelve False.
-    Devuelve True si copio.
+def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
+    """Copia src -> dest/[brand_subfolder]/<nombre>, evitando colisiones
+    con sufijo numérico. Si falla la copia, registra en missing y devuelve
+    False. Devuelve True si copió.
 
-    GUARD: rechaza la operacion si `dest` cae adentro de la carpeta de Dropbox.
-    Esto blinda la regla de oro: NUNCA escribimos en Dropbox.
+    Si `brand_subfolder` se especifica, las fotos van a una subcarpeta
+    con ese nombre (típicamente la marca: GOSSIP, B'LINDA, etc.). Si es
+    None, van al root del dest.
+
+    GUARD: rechaza la operación si `dest` cae adentro de la carpeta de
+    Dropbox. Blinda la regla de oro: NUNCA escribimos en Dropbox.
 
     Nota: si `src` es cloud-only (Dropbox Smart Sync / iCloud), shutil.copy2
-    lo lee, lo cual fuerza la descarga. Puede ser lento; el progreso se ve
-    en la UI porque el procesamiento avanza por SKU.
+    lo lee, lo cual fuerza la descarga. Puede ser lento.
     """
     if _is_under_dropbox(dest):
         raise RuntimeError(
             f"REGLA DE ORO ROTA: el destino {dest} esta adentro de Dropbox. "
             f"Esta app solo lee de Dropbox; nunca escribe ahi."
         )
-    target = dest / src.name
+
+    if brand_subfolder:
+        target_dir = dest / _sanitize_for_folder(brand_subfolder)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            if item is not None:
+                missing.append({
+                    "sku": item["sku"], "qty": item.get("qty", 0),
+                    "reason": f"No pude crear subcarpeta de marca: {e}",
+                })
+            return False
+    else:
+        target_dir = dest
+
+    target = target_dir / src.name
     if target.exists():
         stem, ext = target.stem, target.suffix
         i = 2
         while True:
-            candidate = dest / f"{stem}_{i}{ext}"
+            candidate = target_dir / f"{stem}_{i}{ext}"
             if not candidate.exists():
                 target = candidate
                 break
@@ -242,7 +261,7 @@ def process(pdf_path, modo, on_progress=None,
             on_progress(i, n, msg)
 
     progress(0, 1, "Leyendo PDF...")
-    parsed_result = pdf_parser.parse_proforma(str(pdf_path))
+    parsed_result = pdf_dispatch.parse(str(pdf_path))
     items = parsed_result["items"]
     fmt = parsed_result["format"]
     client = parsed_result.get("client")
@@ -298,19 +317,30 @@ def process(pdf_path, modo, on_progress=None,
             valid_items.append((parsed, item))
 
     missing = [
-        {"sku": u["sku"], "qty": u["qty"], "reason": "Marca no reconocida"}
+        {"sku": u["sku"], "qty": u["qty"], "reason": "Marca no reconocida",
+         "brand": "(desconocida)"}
         for u in unrecognized
     ]
 
     # Despachar al runner especifico segun modo. La opcion
     # `use_grupal_when_no_individuals` la elige el usuario en la pantalla 2.
     if modo == MODE_COMPLETE:
-        copied_count = _run_complete(
+        copied_count, copied_per_brand = _run_complete(
             valid_items, year, dbx, dest, progress, missing,
             use_grupal_when_no_individuals=use_grupal_when_no_individuals,
         )
     else:
-        copied_count = _run_simple(valid_items, modo, year, dbx, dest, progress, missing)
+        copied_count, copied_per_brand = _run_simple(
+            valid_items, modo, year, dbx, dest, progress, missing
+        )
+
+    # SKUs por marca (de la proforma, no de copiadas) - para el reporte.
+    from collections import Counter
+    skus_per_brand = Counter()
+    for parsed, _item in valid_items:
+        skus_per_brand[parsed["brand"]] += 1
+    for u in unrecognized:
+        skus_per_brand["(desconocida)"] += 1
 
     # Escribir reporte
     report_path = _write_report(
@@ -322,6 +352,8 @@ def process(pdf_path, modo, on_progress=None,
         total_skus=total_skus,
         copied=copied_count,
         missing=missing,
+        skus_per_brand=skus_per_brand,
+        copied_per_brand=copied_per_brand,
     )
 
     progress(1, 1, "Listo")
@@ -329,10 +361,13 @@ def process(pdf_path, modo, on_progress=None,
     return {
         "dest": dest,
         "format": fmt,
+        "client": client,
         "total_skus": total_skus,
         "copied": copied_count,
         "missing": missing,
         "report_path": report_path,
+        "skus_per_brand": dict(skus_per_brand),
+        "copied_per_brand": dict(copied_per_brand),
     }
 
 
@@ -398,10 +433,13 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing):
         seen.add(key)
         plan.append((parsed, item))
 
+    from collections import Counter
     copied = 0
+    copied_per_brand = Counter()
     total = len(plan)
     for idx, (parsed, item) in enumerate(plan, 1):
-        progress(idx, total, f"Buscando {item['sku']}")
+        brand = parsed["brand"]
+        progress(idx, total, f"{brand} · {item['sku']}")
         if modo == MODE_GRUPAL:
             src = finder.find_grupal(parsed, year, dbx)
         elif is_surtido(parsed):
@@ -420,11 +458,13 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing):
             missing.append({
                 "sku": item["sku"], "qty": item["qty"],
                 "reason": reason,
+                "brand": brand,
             })
             continue
-        if _copy_to_dest(src, dest, missing, item):
+        if _copy_to_dest(src, dest, missing, item, brand_subfolder=brand):
             copied += 1
-    return copied
+            copied_per_brand[brand] += 1
+    return copied, copied_per_brand
 
 
 def _color_covers(existing_color, ordered_color):
@@ -486,7 +526,9 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
             order.append(key)
         by_ref[key]["items"].append((parsed, item))
 
+    from collections import Counter
     copied = 0
+    copied_per_brand = Counter()
     total = len(order)
 
     for idx, key in enumerate(order, 1):
@@ -494,7 +536,8 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
         ref_parsed = group["parsed"]
         items_for_ref = group["items"]
         ref_label = f"{ref_parsed['prefix']}{ref_parsed['number']}"
-        progress(idx, total, f"Analizando {ref_label}")
+        brand = ref_parsed["brand"]
+        progress(idx, total, f"{brand} · {ref_label}")
 
         # ¿Algun SKU es surtido? Eso por si solo marca la ref como completa.
         has_surtido = any(is_surtido(p) for p, _ in items_for_ref)
@@ -525,8 +568,9 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
 
         if is_complete and grupal_src:
             # Pediste todos los colores que tenemos: mandamos solo la grupal.
-            if _copy_to_dest(grupal_src, dest, missing, None):
+            if _copy_to_dest(grupal_src, dest, missing, None, brand_subfolder=brand):
                 copied += 1
+                copied_per_brand[brand] += 1
         else:
             # No esta completa o no hay grupal: mandamos las individuales pedidas.
             mandated_individuals = False  # ¿realmente mandamos algun individual?
@@ -537,6 +581,7 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                     missing.append({
                         "sku": item["sku"], "qty": item["qty"],
                         "reason": "Surtido sin foto grupal disponible",
+                        "brand": brand,
                     })
                     continue
                 src = finder.find_individual(
@@ -547,16 +592,15 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                     missing.append({
                         "sku": item["sku"], "qty": item["qty"],
                         "reason": "Foto individual no encontrada",
+                        "brand": brand,
                     })
                     continue
-                if _copy_to_dest(src, dest, missing, item):
+                if _copy_to_dest(src, dest, missing, item, brand_subfolder=brand):
                     copied += 1
+                    copied_per_brand[brand] += 1
                     mandated_individuals = True
             # Caso especial: estaba completa, no hay grupal, Y mandamos
             # individuales reales. Reportamos como info que la grupal falto.
-            # Si todo era surtido (no se mando ninguna individual), ya
-            # reportamos cada surtido arriba; no duplicamos un mensaje a
-            # nivel referencia.
             if is_complete and not grupal_src and mandated_individuals:
                 total_pares = sum(
                     it["qty"] for p, it in items_for_ref if not is_surtido(p)
@@ -565,41 +609,72 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                     "sku": ref_label,
                     "qty": total_pares,
                     "reason": "Grupal no encontrada (se mandan individuales)",
+                    "brand": brand,
                 })
 
-    return copied
+    return copied, copied_per_brand
 
 
 # =============================================================================
 # Reporte
 # =============================================================================
 
-def _write_report(dest, pdf_path, modo, fmt, client, total_skus, copied, missing):
+_FMT_LABELS = {
+    "pepperi":        "Pepperi (Off-line Preview)",
+    "sap_factura":    "SAP Business One (Factura de Cliente)",
+    "sap_proforma":   "SAP Business One (Proforma de Cliente)",
+    "sap_cotizacion": "SAP Business One (Cotización de Cliente)",
+}
+
+
+def _write_report(dest, pdf_path, modo, fmt, client, total_skus, copied, missing,
+                   skus_per_brand=None, copied_per_brand=None):
     """Genera reporte.txt en dest. Devuelve Path."""
     now = datetime.datetime.now()
+    skus_per_brand = skus_per_brand or {}
+    copied_per_brand = copied_per_brand or {}
+
     lines = []
     lines.append("REPORTE DE PROCESAMIENTO DE PROFORMA")
     lines.append("=" * 60)
     lines.append(f"Fecha y hora      : {now.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Cliente           : {client or '(no detectado)'}")
     lines.append(f"Archivo PDF       : {pdf_path.name}")
-    lines.append(f"Formato detectado : {fmt}")
+    lines.append(f"Formato detectado : {_FMT_LABELS.get(fmt, fmt)}")
     lines.append(f"Modo de fotos     : {_format_modo_label(modo)}")
     lines.append("")
     lines.append(f"Total SKUs en la proforma : {total_skus}")
     lines.append(f"Total fotos copiadas      : {copied}")
     lines.append(f"Codigos no encontrados    : {len(missing)}")
     lines.append("")
+
+    # Desglose por marca: SKUs ordenados vs fotos copiadas.
+    if skus_per_brand:
+        lines.append("DESGLOSE POR MARCA")
+        lines.append("-" * 60)
+        lines.append(f"{'Marca':<22}  {'SKUs':>6}  {'Copiadas':>9}")
+        lines.append(f"{'-'*22}  {'-'*6}  {'-'*9}")
+        # Ordenar por cantidad de SKUs descendente
+        for brand in sorted(skus_per_brand.keys(),
+                            key=lambda b: -skus_per_brand[b]):
+            n_skus = skus_per_brand[brand]
+            n_copied = copied_per_brand.get(brand, 0)
+            lines.append(f"{brand:<22}  {n_skus:>6}  {n_copied:>9}")
+        lines.append("")
+
     if missing:
         # Ordenar por cantidad descendente para que los faltantes mas importantes
         # aparezcan primero
         missing_sorted = sorted(missing, key=lambda m: -m["qty"])
         lines.append("CODIGOS NO ENCONTRADOS")
         lines.append("-" * 60)
-        lines.append(f"{'Pares':>6}  {'Razon':<25}  Codigo")
-        lines.append(f"{'-'*6}  {'-'*25}  {'-'*30}")
+        lines.append(f"{'Pares':>6}  {'Marca':<20}  {'Codigo':<28}  Razon")
+        lines.append(f"{'-'*6}  {'-'*20}  {'-'*28}  {'-'*20}")
         for m in missing_sorted:
-            lines.append(f"{m['qty']:>6}  {m['reason']:<25}  {m['sku']}")
+            brand = m.get("brand", "")
+            lines.append(
+                f"{m['qty']:>6}  {brand[:20]:<20}  {m['sku'][:28]:<28}  {m['reason']}"
+            )
         lines.append("")
         total_pares_missing = sum(m["qty"] for m in missing)
         lines.append(f"Total pares en codigos faltantes: {total_pares_missing}")

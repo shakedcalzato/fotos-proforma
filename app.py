@@ -24,6 +24,7 @@ from tkinter import filedialog, messagebox
 from pathlib import Path
 
 import pdf_parser
+import pdf_dispatch
 from brands import parse_sku
 import processor
 import dropbox as dropbox_mod
@@ -773,7 +774,7 @@ class App:
         for p in new:
             entry = {"path": p}
             try:
-                entry["parsed"] = pdf_parser.parse_proforma(p)
+                entry["parsed"] = pdf_dispatch.parse(p)
             except pdf_parser.ParseError as e:
                 entry["error"] = str(e)
             except Exception as e:
@@ -872,19 +873,25 @@ class App:
         items = parsed["items"]
         fmt = parsed["format"]
         total = len(items)
-        refs, marcas, unrec, suspect = set(), set(), 0, 0
+
+        # Contar SKUs por marca + refs únicas + no reconocidos + sospechosos
+        from collections import Counter
+        brand_counts = Counter()
+        refs = set()
+        unrec, suspect = 0, 0
         for it in items:
             p = parse_sku(it["sku"])
             if p is None:
                 unrec += 1
                 continue
             refs.add(p["prefix"] + p["number"])
-            marcas.add(p["brand"])
+            brand_counts[p["brand"]] += 1
             if it.get("suspect"):
                 suspect += 1
 
         fmt_label = {
             "pepperi":         "Pepperi · Off-line Preview",
+            "sap_factura":     "SAP Business One · Factura de Cliente",
             "sap_proforma":    "SAP Business One · Proforma",
             "sap_cotizacion":  "SAP Business One · Cotización",
         }.get(fmt, fmt)
@@ -904,7 +911,6 @@ class App:
             ("Formato", fmt_label),
             ("SKUs totales", str(total)),
             ("Referencias únicas", str(len(refs))),
-            ("Marcas detectadas", ", ".join(sorted(marcas)) or "—"),
         ]
         if unrec:
             rows.append(("Marcas no reconocidas", f"{unrec} código(s)"))
@@ -923,12 +929,25 @@ class App:
                 bg=SURFACE, fg=TEXT, anchor="w",
             ).pack(side="left", fill="x", expand=True)
 
-        if len(marcas) > 1:
+        # Desglose por marca (siempre, aunque sea una sola)
+        if brand_counts:
             tk.Label(
-                inner,
-                text="ⓘ  La proforma incluye más de una marca. Se procesa igual.",
-                font=FONT_CAPTION, bg=SURFACE, fg=TEXT_MUTED, anchor="w",
-            ).pack(anchor="w", pady=(10, 0))
+                inner, text="MARCAS DETECTADAS",
+                font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            ).pack(anchor="w", pady=(14, 6))
+            # Ordenamos por cantidad de SKUs, más a menos
+            for brand in sorted(brand_counts.keys(), key=lambda b: -brand_counts[b]):
+                row = tk.Frame(inner, bg=SURFACE)
+                row.pack(fill="x", pady=2)
+                tk.Label(
+                    row, text=brand, font=FONT_BODY,
+                    bg=SURFACE, fg=TEXT, width=22, anchor="w",
+                ).pack(side="left")
+                count = brand_counts[brand]
+                tk.Label(
+                    row, text=f"{count} SKU{'s' if count != 1 else ''}",
+                    font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED, anchor="w",
+                ).pack(side="left")
 
     def _render_s1_batch_info(self):
         """Renderiza la lista de PDFs cuando son varios (modo batch)."""
