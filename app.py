@@ -30,6 +30,7 @@ import processor
 import dropbox as dropbox_mod
 import settings as user_settings
 import platform_utils
+import updater
 
 # Drag-and-drop dentro de la ventana (no al icono de la app, eso es otro
 # mecanismo de macOS y ya esta soportado). Si tkinterdnd2 no esta instalado
@@ -1136,6 +1137,14 @@ class App:
         # forzamos aca por si la pantalla 1 todavia no se renderizo.
         self._refresh_dropbox_status(force_async=True)
 
+        # Chequeo de updates contra GitHub Releases en background. Si hay
+        # una version mas nueva, mostramos un banner no-intrusivo arriba
+        # de pantalla 1. El thread es daemon y completamente safe-to-fail:
+        # sin internet o sin releases publicados, el banner no aparece.
+        self._update_info = None
+        self._update_banner_dismissed = False
+        threading.Thread(target=self._check_for_updates, daemon=True).start()
+
         # Nota: el modo light/dark se aplica al arrancar (ver
         # _apply_palette_globals al cargar el modulo). Si el usuario cambia
         # el modo del SO con la app abierta, el cambio se ve la proxima vez
@@ -1465,6 +1474,125 @@ class App:
             "reporte. ¿Procesar igual?"
         )
         return messagebox.askyesno(title, body, default="yes")
+
+    # ---- Auto-update (chequeo de releases en GitHub) ------------------------
+
+    def _check_for_updates(self):
+        """Corre en thread daemon. Consulta la API de GitHub por el ultimo
+        release; si es mas nuevo que APP_VERSION y el usuario no lo omitio,
+        agenda mostrar el banner en main thread."""
+        info = updater.check_latest_release()
+        if not info:
+            return  # sin internet, sin releases, o fallo silencioso
+        remote_tag = info.get("tag_name") or ""
+        if not updater.is_newer(remote_tag, APP_VERSION):
+            return  # ya estamos al dia (o version local mas nueva)
+        # Respeta "omitir esta version".
+        prefs = user_settings.load()
+        if prefs.get("skipped_version") == remote_tag:
+            return
+        # Aplicar en main thread.
+        try:
+            self.root.after(0, lambda: self._on_update_available(info))
+        except Exception:
+            pass
+
+    def _on_update_available(self, info):
+        """Guarda el info y muestra el banner si estamos en pantalla 1."""
+        self._update_info = info
+        if self._current_screen == 1:
+            self._show_update_banner()
+
+    def _show_update_banner(self):
+        """Crea un banner azul claro arriba del header con info de la
+        nueva version y 3 botones: Ver release / Mas tarde / Omitir.
+        Solo se muestra en pantalla 1 — en otras pantallas la guardamos
+        para mostrar despues."""
+        if not self._update_info or self._update_banner_dismissed:
+            return
+        if hasattr(self, "s1_update_banner") and self.s1_update_banner is not None \
+                and self.s1_update_banner.winfo_exists():
+            return  # ya esta visible
+
+        info = self._update_info
+        version = info.get("tag_name", "?")
+
+        banner = tk.Frame(self.container, bg=ACCENT_TINT)
+        banner.pack(side="top", fill="x")
+        # Padding interno con sub-frame para que el bg azul llegue al borde
+        # pero el contenido tenga padding.
+        inner = tk.Frame(banner, bg=ACCENT_TINT)
+        inner.pack(fill="x", padx=SCREEN_PADX, pady=10)
+
+        # Texto a la izquierda.
+        text = tk.Frame(inner, bg=ACCENT_TINT)
+        text.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            text,
+            text=f"Hay una versión nueva disponible: {version}",
+            font=FONT_BODY_BOLD, bg=ACCENT_TINT, fg=ACCENT, anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            text,
+            text="Bajala desde la página del release y reemplazá la versión actual.",
+            font=FONT_CAPTION, bg=ACCENT_TINT, fg=TEXT_MUTED, anchor="w",
+        ).pack(anchor="w")
+
+        # Botones a la derecha.
+        btns = tk.Frame(inner, bg=ACCENT_TINT)
+        btns.pack(side="right")
+        CanvasButton(
+            btns, text="Ver release",
+            command=self._on_update_view, kind="primary",
+            height=32, padx=14, font=FONT_CAPTION,
+            parent_bg=ACCENT_TINT,
+        ).pack(side="left")
+        CanvasButton(
+            btns, text="Más tarde",
+            command=self._on_update_remind_later, kind="text",
+            height=32, padx=10, font=FONT_CAPTION,
+            parent_bg=ACCENT_TINT,
+        ).pack(side="left", padx=(6, 0))
+        CanvasButton(
+            btns, text="Omitir",
+            command=self._on_update_skip, kind="text",
+            height=32, padx=10, font=FONT_CAPTION,
+            parent_bg=ACCENT_TINT,
+        ).pack(side="left", padx=(6, 0))
+
+        self.s1_update_banner = banner
+
+    def _hide_update_banner(self):
+        b = getattr(self, "s1_update_banner", None)
+        if b is not None and b.winfo_exists():
+            b.destroy()
+        self.s1_update_banner = None
+
+    def _on_update_view(self):
+        """Click en 'Ver release': abrir URL en el browser default."""
+        info = self._update_info or {}
+        url = info.get("html_url") or ""
+        if url:
+            platform_utils.open_in_browser(url)
+        # No cerramos el banner — el usuario puede querer verlo de nuevo.
+
+    def _on_update_remind_later(self):
+        """Click en 'Mas tarde': cerrar el banner solo para esta sesion.
+        En el proximo arranque vuelve a aparecer."""
+        self._update_banner_dismissed = True
+        self._hide_update_banner()
+
+    def _on_update_skip(self):
+        """Click en 'Omitir': guardar el tag en settings asi este banner
+        no vuelve a aparecer hasta que salga una version MAS nueva."""
+        info = self._update_info or {}
+        tag = info.get("tag_name") or ""
+        if tag:
+            prefs = user_settings.load()
+            prefs["skipped_version"] = tag
+            user_settings.save(prefs)
+        self._update_banner_dismissed = True
+        self._hide_update_banner()
 
     # ---- Dropbox status indicator (pre-flight + chip footer) ---------------
 
@@ -1829,6 +1957,11 @@ class App:
     def show_screen1(self):
         self._clear()
         self._current_screen = 1
+        # El banner de update vive como child del container; _clear() lo
+        # destruyo, asi que lo nullificamos. Despues del header lo re-creamos
+        # si todavia hay update pendiente y el usuario no lo descarto.
+        self.s1_update_banner = None
+        self._show_update_banner()
         self._header(
             "Fotos Proforma",
             "Cargá una proforma en PDF y armo la carpeta de fotos para WhatsApp.",

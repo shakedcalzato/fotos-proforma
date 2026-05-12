@@ -27,6 +27,10 @@ DEFAULTS = {
     # Geometria de la ventana del ultimo cierre, formato "WxH+X+Y". Vacio
     # significa "primer arranque, usar tamaño/posicion default y centrar".
     "window_geometry": "",
+    # Si el usuario apreto "Omitir esta version" en el banner de update,
+    # guardamos el tag aca para no volver a mostrar el banner hasta que
+    # salga una version MAS nueva. Vacio = nunca omitio nada.
+    "skipped_version": "",
 }
 
 

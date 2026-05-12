@@ -117,6 +117,20 @@ def app_settings_dir():
 
 
 # -----------------------------------------------------------------------------
+# Abrir URL en el browser default del sistema
+# -----------------------------------------------------------------------------
+
+def open_in_browser(url):
+    """Abre una URL en el browser default. Devuelve True si arranco bien,
+    False si fallo. Cross-platform via webbrowser stdlib."""
+    import webbrowser
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
+# -----------------------------------------------------------------------------
 # Notificacion nativa
 # -----------------------------------------------------------------------------
 
