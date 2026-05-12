@@ -1087,6 +1087,11 @@ class App:
         except tk.TclError:
             pass  # no estamos en macOS Tk - ignoramos
 
+        # IMPORTANTE: dropbox_status tiene que existir ANTES de show_screen1
+        # porque la pantalla 1 lee este atributo para pintar el chip del
+        # footer y dispara un re-check al inicializarse.
+        self.dropbox_status = None
+
         self.show_screen1()
 
         # Registrar drop target en TODA la ventana (no en la bandeja). En
@@ -1098,10 +1103,9 @@ class App:
         # Atajos de teclado: Enter avanza, Esc vuelve, Cmd+W cierra.
         self._wire_shortcuts()
 
-        # Pre-flight check de Dropbox en background. El resultado lo
-        # consume el chip del footer en pantalla 1 y se usa para validar
-        # antes de procesar. Async para no bloquear el arranque.
-        self.dropbox_status = None
+        # Pre-flight check de Dropbox en background. El chip del footer ya
+        # lo dispara en su propia inicializacion (show_screen1), pero lo
+        # forzamos aca por si la pantalla 1 todavia no se renderizo.
         self._refresh_dropbox_status(force_async=True)
 
         # Si la app fue invocada con PDF(s) como argumento (drag al .app desde
