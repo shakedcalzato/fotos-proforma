@@ -45,6 +45,16 @@ except Exception as _e:
     DND_AVAILABLE = False
     _DND_IMPORT_ERROR = repr(_e)
 
+# PIL para renderizar thumbnails de fotos en pantalla 2. Si no carga
+# (raro), solo perdemos la vista previa — el resto de la app sigue OK.
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except Exception:
+    Image = None
+    ImageTk = None
+    PIL_AVAILABLE = False
+
 
 def _log_event(msg):
     """Escribe una linea al log de la app — diagnostico para drag-and-drop
@@ -1144,6 +1154,119 @@ class App:
             # Si el toast falla, no rompemos el flujo — es nice-to-have.
             pass
 
+    # ---- Vista previa de fotos por marca (pantalla 2) ----------------------
+
+    def _build_brand_previews(self, parent):
+        """Sección de pantalla 2 que muestra un thumbnail por marca detectada
+        en las proformas. La carga es async en thread daemon — la UI no se
+        bloquea esperando que se lean las fotos."""
+        if not PIL_AVAILABLE:
+            return
+        if not (self.dropbox_status and self.dropbox_status.get("connected")):
+            return
+
+        # Recolectar primera ref con foto (parsed, item) por marca de TODAS
+        # las proformas cargadas. Filtramos SKUs surtido (no hay individual,
+        # pero la grupal igual existe asi que las dejamos).
+        by_brand = {}  # brand -> (parsed, item)
+        for entry in self.parsed_data_list:
+            if "parsed" not in entry:
+                continue
+            for item in entry["parsed"]["items"]:
+                parsed = parse_sku(item["sku"])
+                if parsed and parsed.get("brand") and parsed["brand"] not in by_brand:
+                    by_brand[parsed["brand"]] = (parsed, item)
+        if not by_brand:
+            return
+
+        # Section label + frame horizontal de thumbnails.
+        self._section_label(parent, "Vista previa") \
+            .pack(anchor="w", pady=(0, 10))
+        thumbs_frame = tk.Frame(parent, bg=BG)
+        thumbs_frame.pack(anchor="w", fill="x", pady=(0, SECTION_GAP))
+
+        # Por cada marca: columna con placeholder Canvas + nombre debajo.
+        # Los placeholders se reemplazan por la imagen real cuando llega.
+        self._brand_preview_widgets = {}
+        for brand in by_brand:
+            col = tk.Frame(thumbs_frame, bg=BG)
+            col.pack(side="left", padx=(0, 10))
+            canvas = tk.Canvas(
+                col, width=72, height=72, bg=SURFACE,
+                highlightthickness=1, highlightbackground=BORDER_SUBTLE,
+                bd=0,
+            )
+            canvas.pack()
+            # Placeholder: iniciales de la marca centradas en gris muy claro.
+            initials = "".join(w[0] for w in brand.split()[:2]).upper()[:3] or brand[:3].upper()
+            canvas.create_text(
+                36, 36, text=initials, font=FONT_BODY_BOLD, fill=TEXT_LIGHT,
+            )
+            # Nombre de la marca debajo (truncado si es muy largo)
+            display_name = brand if len(brand) <= 12 else brand[:11] + "…"
+            tk.Label(
+                col, text=display_name, font=FONT_CAPTION,
+                bg=BG, fg=TEXT_MUTED,
+            ).pack(pady=(4, 0))
+            self._brand_preview_widgets[brand] = canvas
+
+        self._load_brand_previews_async(by_brand)
+
+    def _load_brand_previews_async(self, by_brand):
+        """Carga las imágenes en thread daemon. Cuando llega cada thumbnail
+        lo aplica via root.after a la canvas correspondiente."""
+        if not hasattr(self, "_brand_thumbnail_cache"):
+            self._brand_thumbnail_cache = {}
+        cache = self._brand_thumbnail_cache
+        dbx = self.dropbox_status["root"]
+
+        def _do():
+            import finder as finder_mod
+            for brand, (parsed, _item) in by_brand.items():
+                # Cache hit: aplicar directo en main thread.
+                if brand in cache:
+                    tk_img = cache[brand]
+                    self.root.after(
+                        0, lambda b=brand, img=tk_img:
+                            self._apply_brand_thumbnail(b, img),
+                    )
+                    continue
+                try:
+                    src = finder_mod.find_grupal(parsed, None, dbx)
+                    if src is None:
+                        continue
+                    img = Image.open(src).convert("RGB")
+                    img.thumbnail((68, 68), Image.LANCZOS)
+                    # PhotoImage SOLO en main thread (Tk no es thread-safe).
+                    self.root.after(
+                        0, lambda b=brand, im=img: self._cache_and_apply_thumb(b, im),
+                    )
+                except Exception:
+                    continue
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _cache_and_apply_thumb(self, brand, pil_img):
+        """En main thread: crea PhotoImage, lo cachea y aplica al canvas."""
+        try:
+            tk_img = ImageTk.PhotoImage(pil_img)
+        except Exception:
+            return
+        self._brand_thumbnail_cache[brand] = tk_img
+        self._apply_brand_thumbnail(brand, tk_img)
+
+    def _apply_brand_thumbnail(self, brand, tk_img):
+        """Reemplaza el placeholder de la marca por el thumbnail cargado."""
+        widgets = getattr(self, "_brand_preview_widgets", {})
+        canvas = widgets.get(brand)
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        canvas.create_image(36, 36, image=tk_img)
+        # Guardar ref como atributo del canvas para que el GC no destruya
+        # la PhotoImage antes que el canvas.
+        canvas.image = tk_img
+
     def _preflight_brands_check(self, ok_entries):
         """Verifica que las marcas detectadas en las proformas existan como
         carpetas en Dropbox. Si alguna marca falta, advierte al usuario y
@@ -2097,6 +2220,13 @@ class App:
         # Body scrolleable: si el contenido excede el alto disponible, el
         # usuario puede scrollear con el trackpad/mouse wheel.
         body = self._make_scrollable_body(self.container, padx=SCREEN_PADX)
+
+        # ---- VISTA PREVIA POR MARCA ----
+        # Muestra un thumbnail por cada marca detectada (de la grupal de la
+        # primera ref). Da confianza visual de que la app encontro las
+        # fotos correctas antes de procesar.
+        if PIL_AVAILABLE:
+            self._build_brand_previews(body)
 
         # ---- MODO DE FOTOS ----
         self._section_label(body, "Modo de fotos") \
