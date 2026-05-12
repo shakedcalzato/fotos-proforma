@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -346,6 +346,20 @@ NO_IND_OPCIONES = [
     ("missing", "Marcar faltante"),
     ("grupal",  "Usar la grupal"),
 ]
+
+# Mapeo de id interno de formato a etiqueta human-readable. Se usa para mostrar
+# en pantalla 1 (resumen single y lista batch).
+FORMAT_LABELS = {
+    "pepperi":         "Pepperi · Off-line Preview",
+    "sap_factura":     "SAP · Factura de Cliente",
+    "sap_pedido":      "SAP · Pedido",
+    "sap_proforma":    "SAP · Proforma",
+    "sap_cotizacion":  "SAP · Cotización",
+}
+
+def _fmt_label(fmt):
+    """Devuelve la etiqueta human-readable del formato; fallback al id crudo."""
+    return FORMAT_LABELS.get(fmt, fmt or "")
 
 # Carpeta destino default (la carpeta padre donde se crean las subcarpetas
 # por proforma). El usuario puede cambiarla en pantalla 2.
@@ -2336,6 +2350,16 @@ class App:
         self.client_override_vars = {}
         self._render_s1_info()
 
+    def _remove_pdf(self, path):
+        """Quita UN PDF de la lista (el del path dado) sin tocar el resto.
+        Usado por el boton × al lado de cada fila en el batch."""
+        self.pdf_paths = [p for p in self.pdf_paths if p != path]
+        self.parsed_data_list = [
+            e for e in self.parsed_data_list if e.get("path") != path
+        ]
+        self.client_override_vars.pop(path, None)
+        self._render_s1_info()
+
     # Compat: reemplazar la lista completa (lo usa el handler de macOS).
     def _load_pdf_paths(self, paths):
         self.pdf_paths = []
@@ -2435,13 +2459,7 @@ class App:
             if it.get("suspect"):
                 suspect += 1
 
-        fmt_label = {
-            "pepperi":         "Pepperi · Off-line Preview",
-            "sap_factura":     "SAP Business One · Factura de Cliente",
-            "sap_pedido":      "SAP Business One · Pedido",
-            "sap_proforma":    "SAP Business One · Proforma",
-            "sap_cotizacion":  "SAP Business One · Cotización",
-        }.get(fmt, fmt)
+        fmt_label = _fmt_label(fmt)
 
         self.s1_info_card.pack(fill="x")
         inner = tk.Frame(self.s1_info_card, bg=SURFACE)
@@ -2523,6 +2541,21 @@ class App:
             row = tk.Frame(inner, bg=SURFACE)
             row.pack(fill="x", pady=3)
             name = Path(entry["path"]).name
+            path = entry["path"]
+
+            # Boton × a la derecha para quitar este PDF del batch.
+            # Lo packeamos primero (side="right") para que reserve su espacio
+            # antes que las labels llenen el resto de la fila.
+            remove_btn = tk.Label(
+                row, text="×", font=FONT_BODY_BOLD,
+                bg=SURFACE, fg=TEXT_LIGHT, padx=8,
+            )
+            remove_btn.pack(side="right")
+            # Hover sutil: cambia a rojo cuando el mouse esta encima.
+            remove_btn.bind("<Enter>", lambda e, b=remove_btn: b.configure(fg=ERROR))
+            remove_btn.bind("<Leave>", lambda e, b=remove_btn: b.configure(fg=TEXT_LIGHT))
+            remove_btn.bind("<Button-1>", lambda e, p=path: self._remove_pdf(p))
+
             if "error" in entry:
                 # icono de error como texto
                 tk.Label(
@@ -2541,6 +2574,7 @@ class App:
                 p = entry["parsed"]
                 client = p.get("client") or "(sin cliente)"
                 n_items = len(p["items"])
+                fmt_label = _fmt_label(p.get("format"))
                 tk.Label(
                     row, text="✓", font=FONT_BODY_BOLD,
                     bg=SURFACE, fg=SUCCESS, width=2, anchor="w",
@@ -2549,8 +2583,10 @@ class App:
                     row, text=name, font=FONT_BODY,
                     bg=SURFACE, fg=TEXT, anchor="w",
                 ).pack(side="left")
+                # Texto a la derecha: cliente · formato · n SKUs.
+                detail = f"{client} · {fmt_label} · {n_items} SKUs" if fmt_label else f"{client} · {n_items} SKUs"
                 tk.Label(
-                    row, text=f"{client} · {n_items} SKUs",
+                    row, text=detail,
                     font=FONT_CAPTION, bg=SURFACE, fg=TEXT_MUTED, anchor="e",
                 ).pack(side="right", padx=(8, 0))
 
