@@ -360,7 +360,19 @@ rm -f "$0"
 
 
 def _install_windows(exe_path):
-    """Bootstrapper Windows. Lanza un .bat que reemplaza el .exe y reinicia."""
+    """Bootstrapper Windows con logging + retry. Lanza un .bat que:
+    1. Loguea cada paso a %TEMP%\\fotosproforma_update.log.
+    2. Unblock-File para sacar el zone identifier (Windows marca como
+       "bajado de internet" los archivos descargados, lo que puede
+       bloquear el reemplazo o disparar SmartScreen).
+    3. Espera 4 seg + reintenta el move /Y hasta 20 veces (1 seg c/u)
+       — si el proceso anterior todavia tiene handle al .exe el move
+       falla con error 32, hay que esperar.
+    4. Si despues de todos los reintentos falla, muestra dialogo al
+       usuario con el path del archivo descargado para reemplazo
+       manual.
+    5. Auto-borra el .bat al terminar.
+    """
     import sys
     import os
     import subprocess
@@ -369,23 +381,58 @@ def _install_windows(exe_path):
 
     current_exe = _Path(sys.executable).resolve()
     new_exe = _Path(exe_path).resolve()
-    target_dir = current_exe.parent
+
+    # Mensaje del diálogo si todo falla — escapamos comillas para PowerShell.
+    fail_msg = (
+        "No pude reemplazar el .exe automaticamente.\\n\\n"
+        f"El archivo nuevo quedo en:\\n{new_exe}\\n\\n"
+        "Cerrá Fotos Proforma y reemplazalo a mano por el .exe actual."
+    )
 
     bat = f"""@echo off
-REM Esperar a que el proceso actual termine (PID = {os.getpid()})
-timeout /t 2 /nobreak >nul
+setlocal EnableExtensions
+set "LOG=%TEMP%\\fotosproforma_update.log"
 
-REM Reemplazar el exe (move sobreescribe en Windows con /Y).
-move /Y "{new_exe}" "{current_exe}" >nul 2>&1
-if errorlevel 1 (
-    echo Fallo el reemplazo. >> "%TEMP%\\fotosproforma_update.log"
-    pause
-    exit /b 1
+echo. >> "%LOG%"
+echo === %DATE% %TIME% === >> "%LOG%"
+echo PID a esperar: {os.getpid()} >> "%LOG%"
+echo Source (nuevo): {new_exe} >> "%LOG%"
+echo Target (actual): {current_exe} >> "%LOG%"
+
+REM Esperar a que el proceso anterior termine y libere el .exe.
+timeout /t 4 /nobreak >nul
+
+REM Sacar el zone identifier del archivo descargado (Windows marca
+REM archivos bajados de internet con un stream "ADS" que puede bloquear
+REM ejecucion o move). Unblock-File lo limpia.
+echo Limpiando zone identifier... >> "%LOG%"
+powershell -NoProfile -Command "Unblock-File -LiteralPath '{new_exe}'" >> "%LOG%" 2>&1
+
+REM Intentar el move con retry. Si el .exe anterior todavia tiene
+REM handle abierto (puede pasar con --onefile que extrae a TEMP),
+REM hay que esperar y reintentar.
+set /a TRIES=0
+:retry
+set /a TRIES+=1
+move /Y "{new_exe}" "{current_exe}" >> "%LOG%" 2>&1
+if not errorlevel 1 goto success
+if %TRIES% LSS 20 (
+    echo Intento %TRIES% fallo, reintentando en 1s... >> "%LOG%"
+    timeout /t 1 /nobreak >nul
+    goto retry
 )
 
-REM Iniciar la version nueva.
+echo === FALLO el reemplazo despues de %TRIES% intentos === >> "%LOG%"
+REM Mostrar dialog al usuario para que sepa que pasa.
+powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{fail_msg}', 'Fotos Proforma - Update fallo', 'OK', 'Warning') | Out-Null"
+goto cleanup
+
+:success
+echo === Reemplazo OK en intento %TRIES% === >> "%LOG%"
+echo Iniciando nueva version... >> "%LOG%"
 start "" "{current_exe}"
 
+:cleanup
 REM Auto-borrarse.
 del "%~f0"
 """
@@ -393,14 +440,15 @@ del "%~f0"
     with os.fdopen(fd, "w") as f:
         f.write(bat)
 
-    # Lanzar el .bat detached.
+    # Lanzar el .bat detached (sin ventana de consola visible).
     CREATE_NEW_PROCESS_GROUP = 0x00000200
     DETACHED_PROCESS         = 0x00000008
+    CREATE_NO_WINDOW         = 0x08000000
     subprocess.Popen(
         ["cmd.exe", "/c", bat_path],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
-        creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+        creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW,
     )
     return True
 
