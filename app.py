@@ -1285,27 +1285,6 @@ class App:
             # Si el toast falla, no rompemos el flujo — es nice-to-have.
             pass
 
-    # ---- Sub-seccion condicional de pantalla 2 ----------------------------
-
-    def _refresh_no_ind_visibility(self):
-        """Muestra u oculta la sub-seccion "Si la referencia no tiene foto
-        individual" segun el modo elegido. Solo aplica al modo 'complete'
-        ('Grupal si esta completa') — en los otros la opcion no se usa."""
-        sec = getattr(self, "s2_no_ind_section", None)
-        if sec is None or not sec.winfo_exists():
-            return
-        should_show = (self.modo_var.get() == "complete")
-        already_shown = bool(sec.winfo_manager())
-        if should_show and not already_shown:
-            after = getattr(self, "_s2_no_ind_after", None)
-            if after is not None and after.winfo_exists():
-                sec.pack(anchor="w", pady=(SECTION_GAP, 0), fill="x",
-                         after=after)
-            else:
-                sec.pack(anchor="w", pady=(SECTION_GAP, 0), fill="x")
-        elif (not should_show) and already_shown:
-            sec.pack_forget()
-
     # ---- Vista previa de fotos por marca (pantalla 2) ----------------------
 
     def _build_brand_previews(self, parent):
@@ -2622,38 +2601,13 @@ class App:
         for rid, title, sub, _ in MODOS:
             OptionCard(body, self.modo_var, rid, title, sub) \
                 .pack(fill="x", pady=4)
-
-        # ---- MARCAS SIN INDIVIDUALES ----
-        # Esta sub-opcion solo aplica al modo "Grupal si esta completa".
-        # En los otros modos no tiene sentido — la escondemos y mostramos
-        # cuando el usuario alterna entre cards. Bindeamos un trace al
-        # modo_var para reaccionar.
-        self.s2_no_ind_section = tk.Frame(body, bg=BG)
-        # Se empaqueta condicionalmente en _refresh_no_ind_visibility.
-        self._section_label(
-            self.s2_no_ind_section,
-            "Si la referencia no tiene foto individual",
-        ).pack(anchor="w", pady=(0, 10))
-        SegmentedControl(
-            self.s2_no_ind_section, self.no_ind_var, NO_IND_OPCIONES,
-        ).pack(anchor="w")
-
-        # Posicion donde tiene que ir empaquetada la seccion (despues de
-        # las cards de modo). El reference widget lo guardamos para usar
-        # pack(after=...) al mostrar.
-        self._s2_no_ind_after = body.pack_slaves()[-1] if body.pack_slaves() else None
-
-        # Sincronizar con el modo actual al renderizar.
-        self._refresh_no_ind_visibility()
-
-        # Listener: cuando el modo cambia (click en OptionCard) mostramos/
-        # ocultamos la sub-seccion en vivo. Lo trackeamos con un Variable
-        # trace asi no hay que tocar OptionCard.
-        try:
-            self.modo_var.trace_add("write", lambda *_: self._refresh_no_ind_visibility())
-        except AttributeError:
-            # tk.Tcl < 8.6: API vieja trace().
-            self.modo_var.trace("w", lambda *_: self._refresh_no_ind_visibility())
+        # Nota: la sub-opcion "Si la referencia no tiene foto individual"
+        # (Marcar faltante / Usar la grupal) se removio porque en la
+        # practica de Trafico siempre se prefiere usar la grupal como
+        # fallback (las marcas como VOX que solo tienen grupales). Eso
+        # quedo fijo en _start_processing (use_grupal_when_no_individuals
+        # = True). Si en el futuro hay que volver a exponer la opcion,
+        # se restaura la SegmentedControl con self.no_ind_var.
 
         # ---- NOMBRE DE LA CARPETA ----
         # Single: un editor.
@@ -2710,10 +2664,14 @@ class App:
     def _start_processing(self):
         modo_id = self.modo_var.get()
         modo = next(m[3] for m in MODOS if m[0] == modo_id)
-        use_grupal_no_ind = (self.no_ind_var.get() == "grupal")
+        # En modo "Grupal si esta completa", cuando la marca no tiene
+        # individuales en disco (ej. VOX), usamos la grupal como fallback
+        # en vez de marcar faltante. Hardcoded = True desde que sacamos la
+        # sub-opcion en pantalla 2 — Trafico siempre quiere ese comportamiento.
+        use_grupal_no_ind = True
         dest_root = self.dest_root_var.get()
 
-        # Persistir preferencias
+        # Persistir preferencias (no_ind queda por compat aunque ya no se usa).
         user_settings.save({
             "modo": modo_id,
             "no_ind": self.no_ind_var.get(),
