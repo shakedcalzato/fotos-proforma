@@ -1482,18 +1482,14 @@ class App:
 
     def _check_for_updates(self):
         """Corre en thread daemon. Consulta la API de GitHub por el ultimo
-        release; si es mas nuevo que APP_VERSION y el usuario no lo omitio,
-        agenda mostrar el banner en main thread."""
+        release; si es mas nuevo que APP_VERSION agenda mostrar el banner
+        en main thread."""
         info = updater.check_latest_release()
         if not info:
             return  # sin internet, sin releases, o fallo silencioso
         remote_tag = info.get("tag_name") or ""
         if not updater.is_newer(remote_tag, APP_VERSION):
             return  # ya estamos al dia (o version local mas nueva)
-        # Respeta "omitir esta version".
-        prefs = user_settings.load()
-        if prefs.get("skipped_version") == remote_tag:
-            return
         # Aplicar en main thread.
         try:
             self.root.after(0, lambda: self._on_update_available(info))
@@ -1556,12 +1552,6 @@ class App:
             height=32, padx=10, font=FONT_CAPTION,
             parent_bg=ACCENT_TINT,
         ).pack(side="left", padx=(6, 0))
-        CanvasButton(
-            btns, text="Omitir",
-            command=self._on_update_skip, kind="text",
-            height=32, padx=10, font=FONT_CAPTION,
-            parent_bg=ACCENT_TINT,
-        ).pack(side="left", padx=(6, 0))
 
         self.s1_update_banner = banner
 
@@ -1582,18 +1572,6 @@ class App:
     def _on_update_remind_later(self):
         """Click en 'Mas tarde': cerrar el banner solo para esta sesion.
         En el proximo arranque vuelve a aparecer."""
-        self._update_banner_dismissed = True
-        self._hide_update_banner()
-
-    def _on_update_skip(self):
-        """Click en 'Omitir': guardar el tag en settings asi este banner
-        no vuelve a aparecer hasta que salga una version MAS nueva."""
-        info = self._update_info or {}
-        tag = info.get("tag_name") or ""
-        if tag:
-            prefs = user_settings.load()
-            prefs["skipped_version"] = tag
-            user_settings.save(prefs)
         self._update_banner_dismissed = True
         self._hide_update_banner()
 
