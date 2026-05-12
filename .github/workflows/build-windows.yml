@@ -2,11 +2,18 @@ name: Build Windows EXE
 
 # Cuándo correr este workflow:
 on:
-  # En cada push a main (cuando subís cambios)
+  # En cada push a main (cuando subís cambios) — para iterar rápido.
   push:
     branches: [main]
+    # En cada push de tag v* (ej. v1.1) — para liberar release oficial.
+    # El último step crea el release en GitHub con el .exe como asset.
+    tags: ['v*']
   # Botón "Run workflow" manual desde la UI de GitHub Actions
   workflow_dispatch:
+
+# Permisos para que el último step pueda crear/actualizar releases.
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -49,3 +56,16 @@ jobs:
           retention-days: 90
           # El artifact queda disponible 90 días para descargar desde
           # la página del workflow run en GitHub.
+
+      # ---- Solo en push de tag: crear/actualizar el release de GitHub
+      # ---- con el .exe como asset. Esto activa el auto-update para
+      # ---- los usuarios que ya tengan v1.1+ instalada.
+      - name: Crear release con el .exe (solo en push de tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          # tag_name es implícito (el tag que se está pusheando).
+          # name: usa el tag como título por default.
+          generate_release_notes: true   # GitHub arma changelog auto
+          files: dist/FotosProforma.exe
+          fail_on_unmatched_files: true
