@@ -1008,6 +1008,12 @@ class App:
         # Atajos de teclado: Enter avanza, Esc vuelve, Cmd+W cierra.
         self._wire_shortcuts()
 
+        # Pre-flight check de Dropbox en background. El resultado lo
+        # consume el chip del footer en pantalla 1 y se usa para validar
+        # antes de procesar. Async para no bloquear el arranque.
+        self.dropbox_status = None
+        self._refresh_dropbox_status(force_async=True)
+
         # Si la app fue invocada con PDF(s) como argumento (drag al .app desde
         # Finder antes de que la app este abierta) los cargamos.
         argv_pdfs = [
@@ -1137,6 +1143,121 @@ class App:
         except Exception:
             # Si el toast falla, no rompemos el flujo — es nice-to-have.
             pass
+
+    def _preflight_brands_check(self, ok_entries):
+        """Verifica que las marcas detectadas en las proformas existan como
+        carpetas en Dropbox. Si alguna marca falta, advierte al usuario y
+        deja decidir si procesa igual (los SKUs de esa marca quedan como
+        faltantes en el reporte).
+
+        Returns:
+            True si se puede continuar (todas OK o usuario eligio continuar).
+            False si el usuario cancelo.
+        """
+        if not self.dropbox_status:
+            return True
+        dbx_brands = self.dropbox_status.get("brands") or set()
+        if not dbx_brands:
+            return True  # no pudimos enumerar marcas, no advertimos
+
+        # Recolectar marcas de todos los PDFs OK.
+        proforma_brands = set()
+        for entry in ok_entries:
+            for item in entry["parsed"]["items"]:
+                parsed = parse_sku(item["sku"])
+                if parsed and parsed.get("brand"):
+                    proforma_brands.add(parsed["brand"].upper())
+
+        # Cruzar contra Dropbox. Usamos BRAND_FOLDERS para mapear variantes
+        # de nombre (ej. "VOX" tambien aparece como "VOX 2025"). Hacemos un
+        # match laxo: la marca esta OK si alguna carpeta de dropbox contiene
+        # su nombre o variante.
+        try:
+            from brands import BRAND_FOLDERS
+        except Exception:
+            BRAND_FOLDERS = {}
+
+        missing_brands = []
+        for brand in sorted(proforma_brands):
+            candidates = {brand.upper()}
+            for v in (BRAND_FOLDERS.get(brand, []) or []):
+                candidates.add(v.upper())
+            found = any(
+                any(c == d or c in d or d.startswith(c)
+                    for d in dbx_brands)
+                for c in candidates
+            )
+            if not found:
+                missing_brands.append(brand)
+
+        if not missing_brands:
+            return True
+
+        names = ", ".join(missing_brands)
+        n = len(missing_brands)
+        plural = "estas marcas" if n > 1 else "esta marca"
+        title = "Marca sin carpeta en Dropbox" if n == 1 else f"{n} marcas sin carpeta"
+        body = (
+            f"No encontré carpeta en Dropbox para {plural}:\n\n"
+            f"  {names}\n\n"
+            "Los SKUs de esa(s) marca(s) van a quedar como faltantes en el "
+            "reporte. ¿Procesar igual?"
+        )
+        return messagebox.askyesno(title, body, default="yes")
+
+    # ---- Dropbox status indicator (pre-flight + chip footer) ---------------
+
+    def _refresh_dropbox_status(self, force_async=False):
+        """Re-checkea Dropbox y actualiza self.dropbox_status. Si force_async,
+        corre en thread daemon y actualiza el UI cuando termina. Si no,
+        bloquea (pero es rapido en la mayoria de los casos)."""
+        def _do():
+            try:
+                status = dropbox_mod.get_status()
+            except Exception as e:
+                status = {"connected": False, "root": None, "brand_count": 0,
+                          "error": f"{type(e).__name__}: {e}"}
+            # Si seguimos vivos, aplicar en main thread.
+            try:
+                self.root.after(0, lambda: self._apply_dbx_status(status))
+            except Exception:
+                pass
+
+        if force_async:
+            threading.Thread(target=_do, daemon=True).start()
+        else:
+            _do()
+
+    def _apply_dbx_status(self, status):
+        """Guarda el status nuevo y actualiza el chip si existe."""
+        self.dropbox_status = status
+        self._update_dbx_chip()
+
+    def _update_dbx_chip(self):
+        """Refresca el chip del footer (pantalla 1) segun self.dropbox_status."""
+        if not (hasattr(self, "s1_dbx_label") and self.s1_dbx_label is not None
+                and self.s1_dbx_label.winfo_exists()):
+            return  # no estamos en pantalla 1
+        status = self.dropbox_status
+        if status is None:
+            self.s1_dbx_dot.configure(fg=TEXT_LIGHT)
+            self.s1_dbx_label.configure(
+                text="Dropbox: chequeando…", fg=TEXT_LIGHT,
+            )
+            return
+        if status["connected"]:
+            self.s1_dbx_dot.configure(fg=SUCCESS)
+            n = status["brand_count"]
+            self.s1_dbx_label.configure(
+                text=f"Dropbox conectado · {n} marca{'s' if n != 1 else ''}",
+                fg=TEXT_MUTED,
+            )
+        else:
+            self.s1_dbx_dot.configure(fg=ERROR)
+            self.s1_dbx_label.configure(
+                text="Dropbox no encontrado · click para reintentar",
+                fg=ERROR,
+            )
 
     # ---- Loading overlay (#4) ----------------------------------------------
 
@@ -1463,11 +1584,34 @@ class App:
         self._set_next_enabled(False)
         self.s1_next_btn.pack(side="right")
 
-        # Versión chiquita a la izquierda del footer (útil para soporte)
+        # Versión chiquita + indicador de Dropbox a la izquierda.
+        footer_left = tk.Frame(footer, bg=BG)
+        footer_left.pack(side="left")
         tk.Label(
-            footer, text=f"v{APP_VERSION}",
+            footer_left, text=f"v{APP_VERSION}",
             font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT,
         ).pack(side="left")
+
+        # Chip de Dropbox: dot de color + texto del estado. Click re-chequea.
+        self.s1_dbx_chip = tk.Frame(footer_left, bg=BG)
+        self.s1_dbx_chip.pack(side="left", padx=(14, 0))
+        self.s1_dbx_dot = tk.Label(
+            self.s1_dbx_chip, text="●", font=FONT_BODY, bg=BG, fg=TEXT_LIGHT,
+        )
+        self.s1_dbx_dot.pack(side="left")
+        self.s1_dbx_label = tk.Label(
+            self.s1_dbx_chip, text="Dropbox: chequeando…",
+            font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT,
+        )
+        self.s1_dbx_label.pack(side="left", padx=(4, 0))
+        # Click en cualquier parte del chip re-chequea (util si Dropbox
+        # terminaba de sincronizar mientras la app ya estaba abierta).
+        for w in (self.s1_dbx_chip, self.s1_dbx_dot, self.s1_dbx_label):
+            w.bind("<Button-1>", lambda _e: self._refresh_dropbox_status())
+        # Actualizar inmediatamente con el ultimo estado conocido (si ya
+        # corrimos el check al init) y disparar nuevo check en background.
+        self._update_dbx_chip()
+        self._refresh_dropbox_status(force_async=True)
 
         # Body scrolleable (igual que pantalla 2): si la card "Resumen" tiene
         # muchas marcas detectadas, la lista se desborda y el usuario necesita
@@ -2038,6 +2182,22 @@ class App:
         if not ok_entries:
             messagebox.showerror("Sin proformas", "Ningún PDF se pudo leer.")
             return
+
+        # Pre-flight: Dropbox conectado?
+        if self.dropbox_status is None or not self.dropbox_status.get("connected"):
+            # Re-chequeo sincronico antes de bloquear (puede haberse conectado).
+            self._refresh_dropbox_status(force_async=False)
+        if not (self.dropbox_status and self.dropbox_status.get("connected")):
+            err = (self.dropbox_status or {}).get("error") or \
+                  "No encontré la carpeta de Dropbox sincronizada."
+            messagebox.showerror("Dropbox no encontrado", err)
+            return
+
+        # Validacion previa: ¿hay marcas en las proformas que no existen en
+        # Dropbox? Si hay, advertimos al usuario antes de procesar — esos
+        # SKUs van a quedar como faltantes.
+        if not self._preflight_brands_check(ok_entries):
+            return  # usuario cancelo en el dialog
 
         from collections import Counter
         parent_path = Path(dest_root) if dest_root else (Path.home() / "Desktop" / "Fotos de Proformas")

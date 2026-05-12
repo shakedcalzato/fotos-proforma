@@ -75,6 +75,57 @@ def find_dropbox_root():
     return found
 
 
+def get_status():
+    """Chequeo rapido (no bloqueante) de Dropbox para el indicador del UI.
+
+    No lanza excepcion: siempre devuelve dict con keys:
+        connected:    bool — True si encontramos Dropbox + GRUPALES/INDIVIDUALES
+        root:         Path|None — ruta a la raiz si connected
+        brand_count:  int — cantidad de carpetas de marca encontradas (best-effort)
+        error:        str — mensaje human-friendly si no connected
+
+    Usado por el footer de pantalla 1 ("Dropbox conectado · 14 marcas")
+    y por el pre-flight check al abrir la app.
+    """
+    try:
+        root = find_dropbox_root()
+    except DropboxNotFoundError as e:
+        return {"connected": False, "root": None, "brand_count": 0,
+                "error": str(e)}
+    except Exception as e:
+        return {"connected": False, "root": None, "brand_count": 0,
+                "error": f"{type(e).__name__}: {e}"}
+
+    # Contar marcas top-level en GRUPALES e INDIVIDUALES. Es rapido (un
+    # par de listdir). Usamos un set para no duplicar marcas que aparecen
+    # en ambas raices.
+    brands = set()
+    for sub in ("GRUPALES", "INDIVIDUALES"):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        try:
+            for year_dir in d.iterdir():
+                if not year_dir.is_dir():
+                    continue
+                try:
+                    for brand_dir in year_dir.iterdir():
+                        if brand_dir.is_dir():
+                            brands.add(brand_dir.name.upper())
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+    return {
+        "connected": True,
+        "root": root,
+        "brand_count": len(brands),
+        "brands": brands,
+        "error": "",
+    }
+
+
 # Smoke test
 if __name__ == "__main__":
     try:
