@@ -233,28 +233,50 @@ def _detect_dark_mode():
     return False
 
 
-DARK_MODE = _detect_dark_mode()
-_PALETTE = _PALETTE_DARK if DARK_MODE else _PALETTE_LIGHT
+def _apply_palette_globals(dark):
+    """Re-asigna todas las constantes globales de paleta segun modo. Llamado
+    al cargar el modulo (con el modo detectado) y cuando el SO cambia el
+    modo en runtime (App._check_dark_mode_change)."""
+    global _PALETTE, DARK_MODE
+    global BG, SURFACE, TEXT, TEXT_MUTED, TEXT_LIGHT
+    global ACCENT, ACCENT_HOVER, ACCENT_TINT
+    global BORDER, BORDER_SUBTLE, BORDER_STRONG, SHADOW
+    global DISABLED_BG, DISABLED_FG, SUCCESS, ERROR
+    global TOAST_BG, TOAST_FG, HOVER_BG
+    _PALETTE = _PALETTE_DARK if dark else _PALETTE_LIGHT
+    DARK_MODE = dark
+    BG              = _PALETTE["BG"]
+    SURFACE         = _PALETTE["SURFACE"]
+    TEXT            = _PALETTE["TEXT"]
+    TEXT_MUTED      = _PALETTE["TEXT_MUTED"]
+    TEXT_LIGHT      = _PALETTE["TEXT_LIGHT"]
+    ACCENT          = _PALETTE["ACCENT"]
+    ACCENT_HOVER    = _PALETTE["ACCENT_HOVER"]
+    ACCENT_TINT     = _PALETTE["ACCENT_TINT"]
+    BORDER          = _PALETTE["BORDER"]
+    BORDER_SUBTLE   = _PALETTE["BORDER_SUBTLE"]
+    BORDER_STRONG   = _PALETTE["BORDER_STRONG"]
+    SHADOW          = _PALETTE["SHADOW"]
+    DISABLED_BG     = _PALETTE["DISABLED_BG"]
+    DISABLED_FG     = _PALETTE["DISABLED_FG"]
+    SUCCESS         = _PALETTE["SUCCESS"]
+    ERROR           = _PALETTE["ERROR"]
+    TOAST_BG        = _PALETTE["TOAST_BG"]
+    TOAST_FG        = _PALETTE["TOAST_FG"]
+    HOVER_BG        = _PALETTE["HOVER_BG"]
 
-BG              = _PALETTE["BG"]
-SURFACE         = _PALETTE["SURFACE"]
-TEXT            = _PALETTE["TEXT"]
-TEXT_MUTED      = _PALETTE["TEXT_MUTED"]
-TEXT_LIGHT      = _PALETTE["TEXT_LIGHT"]
-ACCENT          = _PALETTE["ACCENT"]
-ACCENT_HOVER    = _PALETTE["ACCENT_HOVER"]
-ACCENT_TINT     = _PALETTE["ACCENT_TINT"]
-BORDER          = _PALETTE["BORDER"]
-BORDER_SUBTLE   = _PALETTE["BORDER_SUBTLE"]
-BORDER_STRONG   = _PALETTE["BORDER_STRONG"]
-SHADOW          = _PALETTE["SHADOW"]
-DISABLED_BG     = _PALETTE["DISABLED_BG"]
-DISABLED_FG     = _PALETTE["DISABLED_FG"]
-SUCCESS         = _PALETTE["SUCCESS"]
-ERROR           = _PALETTE["ERROR"]
-TOAST_BG        = _PALETTE["TOAST_BG"]
-TOAST_FG        = _PALETTE["TOAST_FG"]
-HOVER_BG        = _PALETTE["HOVER_BG"]
+
+# Forward declarations: las constantes se asignan abajo en
+# _apply_palette_globals(). Las dejamos aca con valor del modo detectado
+# para que cualquier import temprano vea valores validos.
+_PALETTE = _PALETTE_LIGHT
+DARK_MODE = False
+BG = SURFACE = TEXT = TEXT_MUTED = TEXT_LIGHT = ""
+ACCENT = ACCENT_HOVER = ACCENT_TINT = ""
+BORDER = BORDER_SUBTLE = BORDER_STRONG = SHADOW = ""
+DISABLED_BG = DISABLED_FG = SUCCESS = ERROR = ""
+TOAST_BG = TOAST_FG = HOVER_BG = ""
+_apply_palette_globals(_detect_dark_mode())
 
 
 # =============================================================================
@@ -381,12 +403,18 @@ class CanvasButton(tk.Canvas):
     redondeados. Tres variantes: primary (azul), secondary (gris claro),
     text (sin fondo, texto azul)."""
 
-    KINDS = {
-        "primary":   {"bg": ACCENT,        "fg": "#FFFFFF", "hover_bg": ACCENT_HOVER},
-        "secondary": {"bg": SURFACE,       "fg": TEXT,      "hover_bg": HOVER_BG,
-                      "border": BORDER},
-        "text":      {"bg": None,          "fg": ACCENT,    "hover_bg": ACCENT_TINT},
-    }
+    @staticmethod
+    def kinds():
+        """Devuelve los kinds del boton evaluados con la paleta ACTUAL.
+        No usamos class attribute porque la paleta cambia en runtime
+        cuando el SO pasa de light a dark — un class attr capturaria
+        los valores viejos."""
+        return {
+            "primary":   {"bg": ACCENT,        "fg": "#FFFFFF", "hover_bg": ACCENT_HOVER},
+            "secondary": {"bg": SURFACE,       "fg": TEXT,      "hover_bg": HOVER_BG,
+                          "border": BORDER},
+            "text":      {"bg": None,          "fg": ACCENT,    "hover_bg": ACCENT_TINT},
+        }
 
     def __init__(self, parent, text, command, kind="primary",
                  height=44, padx=24, font=FONT_BUTTON, parent_bg=None):
@@ -406,7 +434,7 @@ class CanvasButton(tk.Canvas):
             parent, width=width, height=height,
             bg=parent_bg, highlightthickness=0, bd=0,
         )
-        self.cfg = self.KINDS[kind].copy()
+        self.cfg = self.kinds()[kind].copy()
         self.kind = kind
         self.command = command
         self._text = text
@@ -1108,6 +1136,12 @@ class App:
         # forzamos aca por si la pantalla 1 todavia no se renderizo.
         self._refresh_dropbox_status(force_async=True)
 
+        # Polling del modo del sistema (light/dark) cada 3 segundos. Si el
+        # usuario cambia el modo del OS mientras la app esta abierta, la
+        # detectamos y reapplicamos la paleta + re-renderizamos la pantalla
+        # actual con los colores nuevos.
+        self.root.after(3000, self._check_dark_mode_change)
+
         # Si la app fue invocada con PDF(s) como argumento (drag al .app desde
         # Finder antes de que la app este abierta) los cargamos.
         argv_pdfs = [
@@ -1263,11 +1297,30 @@ class App:
         if not by_brand:
             return
 
-        # Section label + frame horizontal de thumbnails.
+        # Section label + frame horizontal de thumbnails con scroll horizontal
+        # — si hay muchas marcas no entran en el ancho de la ventana, asi el
+        # usuario puede arrastrar para ver el resto.
         self._section_label(parent, "Vista previa") \
             .pack(anchor="w", pady=(0, 10))
-        thumbs_frame = tk.Frame(parent, bg=BG)
-        thumbs_frame.pack(anchor="w", fill="x", pady=(0, SECTION_GAP))
+
+        wrap = tk.Frame(parent, bg=BG)
+        wrap.pack(fill="x", pady=(0, SECTION_GAP))
+
+        thumbs_canvas = tk.Canvas(
+            wrap, bg=BG, highlightthickness=0, bd=0,
+            height=108,  # alto fijo: 72 thumbnail + 4 pad + ~20 label + scrollbar
+        )
+        hbar = tk.Scrollbar(wrap, orient="horizontal", command=thumbs_canvas.xview)
+        thumbs_canvas.configure(xscrollcommand=hbar.set)
+        thumbs_canvas.pack(side="top", fill="x")
+        hbar.pack(side="bottom", fill="x")
+
+        thumbs_frame = tk.Frame(thumbs_canvas, bg=BG)
+        thumbs_canvas.create_window((0, 0), window=thumbs_frame, anchor="nw")
+
+        def _on_thumbs_configure(_e):
+            thumbs_canvas.configure(scrollregion=thumbs_canvas.bbox("all"))
+        thumbs_frame.bind("<Configure>", _on_thumbs_configure)
 
         # Por cada marca: columna con placeholder Canvas + nombre debajo.
         # Los placeholders se reemplazan por la imagen real cuando llega.
@@ -1411,6 +1464,47 @@ class App:
             "reporte. ¿Procesar igual?"
         )
         return messagebox.askyesno(title, body, default="yes")
+
+    # ---- Modo oscuro/claro: polling para detectar cambios en runtime -------
+
+    def _check_dark_mode_change(self):
+        """Polling cada 3 segundos. Si el modo del SO cambio (light <-> dark)
+        reaplicamos la paleta globalmente y re-renderizamos la pantalla
+        actual. Si estamos procesando NO re-renderizamos (interrumpiria el
+        flujo) — se aplica la proxima vez que el usuario navegue."""
+        try:
+            new_dark = _detect_dark_mode()
+        except Exception:
+            new_dark = DARK_MODE
+        if new_dark != DARK_MODE:
+            _apply_palette_globals(new_dark)
+            # NO refresh durante procesamiento — la pantalla 3 procesando
+            # esta corriendo un thread que cambia widgets desde callbacks.
+            # Refrescar destruiria los widgets activos y rompe el flow.
+            if self._current_screen != "processing":
+                self._refresh_current_screen()
+        # Re-schedule. Cancelar si la app se cierra (root destruido).
+        try:
+            self.root.after(3000, self._check_dark_mode_change)
+        except tk.TclError:
+            pass
+
+    def _refresh_current_screen(self):
+        """Re-renderiza la pantalla actual con la paleta vigente. Usado
+        cuando cambia el modo del SO en runtime. Mantiene el state porque
+        los show_screenN leen de self.* (parsed_data_list, modo_var,
+        results, etc.)."""
+        screen = self._current_screen
+        try:
+            if screen == 1:
+                self.show_screen1()
+            elif screen == 2:
+                self.show_screen2()
+            elif screen == "result":
+                self.show_screen3_result()
+            # En "processing" no refresheamos — ya filtrado arriba.
+        except Exception as e:
+            _log_event(f"refresh_current_screen FAIL: {type(e).__name__}: {e}")
 
     # ---- Dropbox status indicator (pre-flight + chip footer) ---------------
 
@@ -2912,17 +3006,24 @@ class App:
         return handler
 
     def _build_scrollable_results_list(self, parent, results):
-        """Lista scrolleable de resultados batch. Click en una fila abre la carpeta."""
+        """Lista scrolleable de resultados batch (vertical Y horizontal).
+        Click en una fila abre la carpeta. Si un nombre de carpeta es muy
+        largo, la fila puede scrollearse horizontalmente para verlo entero."""
         wrap = tk.Frame(parent, bg=SURFACE)
         wrap.pack(fill="both", expand=True)
 
+        # Grid 2x2: canvas + vbar a la derecha + hbar abajo.
         canvas = tk.Canvas(
             wrap, bg=SURFACE, highlightthickness=0, bd=0, height=200,
         )
-        scrollbar = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        vbar = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        hbar = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+        wrap.grid_rowconfigure(0, weight=1)
+        wrap.grid_columnconfigure(0, weight=1)
 
         inner = tk.Frame(canvas, bg=SURFACE)
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
@@ -2932,7 +3033,12 @@ class App:
         inner.bind("<Configure>", _on_inner_configure)
 
         def _on_canvas_configure(event):
-            canvas.itemconfig(win_id, width=event.width)
+            # El inner debe ser al menos tan ancho como el canvas (para que
+            # fill='x' en las filas funcione cuando hay espacio sobrante).
+            # Si el contenido natural es mayor, dejamos que se ensanche para
+            # habilitar scroll horizontal.
+            req = inner.winfo_reqwidth()
+            canvas.itemconfig(win_id, width=max(event.width, req))
         canvas.bind("<Configure>", _on_canvas_configure)
 
         for r in results:
@@ -2964,7 +3070,7 @@ class App:
             )
             btn.pack(side="right")
 
-        # Mouse wheel
+        # Mouse wheel vertical.
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * event.delta), "units")
         def _bind_wheel(widget):
