@@ -145,36 +145,116 @@ def _split_status_detail(msg):
 
 
 # =============================================================================
-# Paleta
+# Paleta (light + dark)
 # =============================================================================
+#
+# Las constantes BG, SURFACE, TEXT, etc. se asignan dinamicamente al cargar
+# el modulo segun el modo del sistema (light/dark). Para detectar el modo
+# se consulta el SO una vez al inicio — los widgets se crean despues, asi
+# que ven los valores correctos. Si el usuario cambia el modo del sistema
+# mientras la app esta abierta, no se refleja hasta reiniciar.
 
-BG          = "#F5F5F7"   # fondo de la ventana
-SURFACE     = "#FFFFFF"   # cards / superficies
-TEXT        = "#1D1D1F"   # texto principal
-TEXT_MUTED  = "#6E6E73"   # texto secundario
-TEXT_LIGHT  = "#86868B"   # texto terciario / labels de seccion
+_PALETTE_LIGHT = {
+    "BG":              "#F5F5F7",
+    "SURFACE":         "#FFFFFF",
+    "TEXT":            "#1D1D1F",
+    "TEXT_MUTED":      "#6E6E73",
+    "TEXT_LIGHT":      "#86868B",
+    "ACCENT":          "#0066CC",
+    "ACCENT_HOVER":    "#0058B5",
+    "ACCENT_TINT":     "#E8F1FC",
+    "BORDER":          "#D2D2D7",
+    "BORDER_SUBTLE":   "#E5E5EA",
+    "BORDER_STRONG":   "#A8A8AC",
+    "SHADOW":          "#E0E0E5",
+    "DISABLED_BG":     "#E5E5EA",
+    "DISABLED_FG":     "#A8A8AC",
+    "SUCCESS":         "#30A46C",
+    "ERROR":           "#E5484D",
+    "TOAST_BG":        "#1D1D1F",
+    "TOAST_FG":        "#FFFFFF",
+    "HOVER_BG":        "#EDEDED",   # hover sutil para botones secondary
+}
 
-ACCENT       = "#0066CC"
-ACCENT_HOVER = "#0058B5"
-ACCENT_TINT  = "#E8F1FC"
+_PALETTE_DARK = {
+    "BG":              "#1D1D1F",   # fondo de la ventana (mas oscuro que SURFACE)
+    "SURFACE":         "#2C2C2E",   # cards / superficies
+    "TEXT":            "#F2F2F7",   # texto principal
+    "TEXT_MUTED":      "#AEAEB2",   # texto secundario
+    "TEXT_LIGHT":      "#8E8E93",   # texto terciario / labels de seccion
+    "ACCENT":          "#0A84FF",   # azul mas vibrante para dark
+    "ACCENT_HOVER":    "#409CFF",
+    "ACCENT_TINT":     "#1C3A5E",   # tint azul oscuro
+    "BORDER":          "#48484A",
+    "BORDER_SUBTLE":   "#38383A",
+    "BORDER_STRONG":   "#5C5C5E",
+    "SHADOW":          "#000000",   # sombra negra contrasta sobre BG oscuro
+    "DISABLED_BG":     "#3A3A3C",
+    "DISABLED_FG":     "#6D6D70",
+    "SUCCESS":         "#30D158",
+    "ERROR":           "#FF453A",
+    "TOAST_BG":        "#F2F2F7",   # invertido: toast claro en dark mode
+    "TOAST_FG":        "#1D1D1F",
+    "HOVER_BG":        "#3A3A3C",
+}
 
-BORDER          = "#D2D2D7"
-BORDER_SUBTLE   = "#E5E5EA"   # borde mas sutil para card en reposo
-BORDER_STRONG   = "#A8A8AC"
 
-# Sombra "fake" debajo de las cards. En tk classic no hay drop-shadow real;
-# emulamos con un Frame de 2-3px en un gris ligeramente mas oscuro que BG.
-SHADOW          = "#E0E0E5"
+def _detect_dark_mode():
+    """True si el SO esta configurado en modo oscuro.
 
-DISABLED_BG = "#E5E5EA"
-DISABLED_FG = "#A8A8AC"
+    - macOS: lee `defaults read -g AppleInterfaceStyle` (devuelve "Dark"
+      cuando esta en dark mode; en light no existe la key).
+    - Windows: lee la registry key AppsUseLightTheme (0 = dark).
+    - Linux y otros: por ahora siempre light (es lo mas comun cuando no
+      hay forma estandar de detectarlo).
 
-SUCCESS = "#30A46C"
-ERROR   = "#E5484D"
+    Falla silenciosa: en caso de error o ambigüedad, devuelve False
+    (light) — es el default mas seguro visualmente.
+    """
+    import subprocess
+    try:
+        if platform_utils.IS_MAC:
+            r = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=2,
+            )
+            return r.returncode == 0 and r.stdout.strip().lower() == "dark"
+        if platform_utils.IS_WINDOWS:
+            r = subprocess.run(
+                ["reg", "query",
+                 r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                 "/v", "AppsUseLightTheme"],
+                capture_output=True, text=True, timeout=2,
+            )
+            # La key vale 0x0 cuando esta en dark, 0x1 en light.
+            return r.returncode == 0 and "0x0" in r.stdout
+    except Exception:
+        pass
+    return False
 
-# Toast (snackbar): fondo oscuro semi-opaco con texto claro, estilo macOS.
-TOAST_BG    = "#1D1D1F"
-TOAST_FG    = "#FFFFFF"
+
+DARK_MODE = _detect_dark_mode()
+_PALETTE = _PALETTE_DARK if DARK_MODE else _PALETTE_LIGHT
+
+BG              = _PALETTE["BG"]
+SURFACE         = _PALETTE["SURFACE"]
+TEXT            = _PALETTE["TEXT"]
+TEXT_MUTED      = _PALETTE["TEXT_MUTED"]
+TEXT_LIGHT      = _PALETTE["TEXT_LIGHT"]
+ACCENT          = _PALETTE["ACCENT"]
+ACCENT_HOVER    = _PALETTE["ACCENT_HOVER"]
+ACCENT_TINT     = _PALETTE["ACCENT_TINT"]
+BORDER          = _PALETTE["BORDER"]
+BORDER_SUBTLE   = _PALETTE["BORDER_SUBTLE"]
+BORDER_STRONG   = _PALETTE["BORDER_STRONG"]
+SHADOW          = _PALETTE["SHADOW"]
+DISABLED_BG     = _PALETTE["DISABLED_BG"]
+DISABLED_FG     = _PALETTE["DISABLED_FG"]
+SUCCESS         = _PALETTE["SUCCESS"]
+ERROR           = _PALETTE["ERROR"]
+TOAST_BG        = _PALETTE["TOAST_BG"]
+TOAST_FG        = _PALETTE["TOAST_FG"]
+HOVER_BG        = _PALETTE["HOVER_BG"]
 
 
 # =============================================================================
@@ -303,7 +383,7 @@ class CanvasButton(tk.Canvas):
 
     KINDS = {
         "primary":   {"bg": ACCENT,        "fg": "#FFFFFF", "hover_bg": ACCENT_HOVER},
-        "secondary": {"bg": SURFACE,       "fg": TEXT,      "hover_bg": "#EDEDED",
+        "secondary": {"bg": SURFACE,       "fg": TEXT,      "hover_bg": HOVER_BG,
                       "border": BORDER},
         "text":      {"bg": None,          "fg": ACCENT,    "hover_bg": ACCENT_TINT},
     }
@@ -755,7 +835,7 @@ class SegmentedControl(tk.Frame):
             fg = "#FFFFFF"
             border = ACCENT
         elif seg._hover:
-            bg = "#FAFAFA"
+            bg = HOVER_BG
             fg = TEXT
             border = BORDER_STRONG
         else:
