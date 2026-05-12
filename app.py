@@ -1285,6 +1285,27 @@ class App:
             # Si el toast falla, no rompemos el flujo — es nice-to-have.
             pass
 
+    # ---- Sub-seccion condicional de pantalla 2 ----------------------------
+
+    def _refresh_no_ind_visibility(self):
+        """Muestra u oculta la sub-seccion "Si la referencia no tiene foto
+        individual" segun el modo elegido. Solo aplica al modo 'complete'
+        ('Grupal si esta completa') — en los otros la opcion no se usa."""
+        sec = getattr(self, "s2_no_ind_section", None)
+        if sec is None or not sec.winfo_exists():
+            return
+        should_show = (self.modo_var.get() == "complete")
+        already_shown = bool(sec.winfo_manager())
+        if should_show and not already_shown:
+            after = getattr(self, "_s2_no_ind_after", None)
+            if after is not None and after.winfo_exists():
+                sec.pack(anchor="w", pady=(SECTION_GAP, 0), fill="x",
+                         after=after)
+            else:
+                sec.pack(anchor="w", pady=(SECTION_GAP, 0), fill="x")
+        elif (not should_show) and already_shown:
+            sec.pack_forget()
+
     # ---- Vista previa de fotos por marca (pantalla 2) ----------------------
 
     def _build_brand_previews(self, parent):
@@ -2602,11 +2623,37 @@ class App:
             OptionCard(body, self.modo_var, rid, title, sub) \
                 .pack(fill="x", pady=4)
 
-        # ---- MARCAS SIN INDIVIDUALES (solo aplica al modo "Grupal si está completa") ----
-        self._section_label(body, "Si la referencia no tiene foto individual") \
-            .pack(anchor="w", pady=(SECTION_GAP, 10))
-        SegmentedControl(body, self.no_ind_var, NO_IND_OPCIONES) \
-            .pack(anchor="w")
+        # ---- MARCAS SIN INDIVIDUALES ----
+        # Esta sub-opcion solo aplica al modo "Grupal si esta completa".
+        # En los otros modos no tiene sentido — la escondemos y mostramos
+        # cuando el usuario alterna entre cards. Bindeamos un trace al
+        # modo_var para reaccionar.
+        self.s2_no_ind_section = tk.Frame(body, bg=BG)
+        # Se empaqueta condicionalmente en _refresh_no_ind_visibility.
+        self._section_label(
+            self.s2_no_ind_section,
+            "Si la referencia no tiene foto individual",
+        ).pack(anchor="w", pady=(0, 10))
+        SegmentedControl(
+            self.s2_no_ind_section, self.no_ind_var, NO_IND_OPCIONES,
+        ).pack(anchor="w")
+
+        # Posicion donde tiene que ir empaquetada la seccion (despues de
+        # las cards de modo). El reference widget lo guardamos para usar
+        # pack(after=...) al mostrar.
+        self._s2_no_ind_after = body.pack_slaves()[-1] if body.pack_slaves() else None
+
+        # Sincronizar con el modo actual al renderizar.
+        self._refresh_no_ind_visibility()
+
+        # Listener: cuando el modo cambia (click en OptionCard) mostramos/
+        # ocultamos la sub-seccion en vivo. Lo trackeamos con un Variable
+        # trace asi no hay que tocar OptionCard.
+        try:
+            self.modo_var.trace_add("write", lambda *_: self._refresh_no_ind_visibility())
+        except AttributeError:
+            # tk.Tcl < 8.6: API vieja trace().
+            self.modo_var.trace("w", lambda *_: self._refresh_no_ind_visibility())
 
         # ---- NOMBRE DE LA CARPETA ----
         # Single: un editor.
