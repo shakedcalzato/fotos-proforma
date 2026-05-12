@@ -60,6 +60,80 @@ def _log_event(msg):
         pass
 
 
+def _friendly_error(exc_or_str):
+    """Convierte una excepcion/string en (title, body) human-friendly para
+    mostrar en messagebox.showerror. Mapea errores tecnicos a explicaciones
+    accionables. Si no reconocemos el tipo, igual mostramos algo legible.
+
+    Returns:
+        (title:str, body:str)
+    """
+    # Si nos pasaron un string crudo (ej. parsed_data_list[i]["error"]),
+    # lo usamos como body — los strings de pdf_parser.ParseError ya estan
+    # redactados humanos.
+    if isinstance(exc_or_str, str):
+        return ("No pude leer los PDFs", exc_or_str)
+
+    name = type(exc_or_str).__name__
+    msg = str(exc_or_str) or "(sin detalle)"
+
+    # Errores que ya tienen mensaje humano: los pasamos tal cual.
+    if name in ("ParseError", "DropboxNotFoundError"):
+        return ("No pude continuar", msg)
+
+    # Filesystem / permisos.
+    if isinstance(exc_or_str, PermissionError):
+        return (
+            "Sin permiso para escribir",
+            "macOS no me deja escribir en esa carpeta. Probá:\n\n"
+            "• Cambiar la carpeta destino (boton 'Cambiar...' en la pantalla anterior).\n"
+            "• Verificar permisos del Escritorio en Ajustes del Sistema → "
+            "Privacidad y Seguridad → Archivos y Carpetas.\n\n"
+            f"Detalle: {msg}",
+        )
+    if isinstance(exc_or_str, FileNotFoundError):
+        return (
+            "Archivo no encontrado",
+            f"No encontre uno de los archivos necesarios. {msg}\n\n"
+            "Verifica que el PDF y las fotos esten en sus lugares.",
+        )
+    if isinstance(exc_or_str, OSError):
+        return (
+            "Error de disco",
+            f"Algo salio mal escribiendo al disco:\n\n{msg}\n\n"
+            "Probá liberar espacio o elegir otra carpeta destino.",
+        )
+
+    # Default: genérico pero legible.
+    return (
+        "Error inesperado",
+        f"{name}: {msg}\n\n"
+        "Si vuelve a pasar, mostrame el log de la app:\n"
+        f"  {platform_utils.app_log_path()}",
+    )
+
+
+def _split_status_detail(msg):
+    """Separa un mensaje de progreso en (status, detail) para mostrar en
+    dos labels en pantalla 3 procesando.
+
+    El processor emite cosas como:
+    - "Leyendo PDF..."                      -> status="Leyendo PDF...", detail=""
+    - "[1/3] file.pdf · GOSSIP · GP0012/A/BLK"
+        -> status="[1/3] file.pdf", detail="GOSSIP · GP0012/A/BLK"
+    - "Cancelado", "Listo"                  -> status=msg, detail=""
+    """
+    if not msg or "·" not in msg:
+        return msg, ""
+    parts = [p.strip() for p in msg.split("·")]
+    # Si tenemos 2+ partes, las ultimas 2 son brand · sku (el detalle).
+    if len(parts) >= 2:
+        detail = " · ".join(parts[-2:])
+        status = " · ".join(parts[:-2]) if len(parts) > 2 else ""
+        return status, detail
+    return msg, ""
+
+
 # =============================================================================
 # Paleta
 # =============================================================================
@@ -1608,7 +1682,8 @@ class App:
         # el usuario tiene que reaccionar).
         errored = [e for e in self.parsed_data_list if "error" in e]
         if errored and len(errored) == len(self.parsed_data_list):
-            messagebox.showerror("No pude leer los PDFs", errored[0]["error"])
+            title, body = _friendly_error(errored[0]["error"])
+            messagebox.showerror(title, body)
         else:
             # Toast de confirmacion no intrusivo.
             ok_count = sum(1 for e in new_entries if "parsed" in e)
@@ -2007,11 +2082,18 @@ class App:
         self._batch_results = []
         self._batch_errors = []
         self.results = []
+        # Cancel event compartido con el processor. Se setea desde el
+        # boton "Cancelar" en pantalla 3 procesando — el processor lo
+        # chequea entre SKUs y corta limpio.
+        self.cancel_event = threading.Event()
         # Fade-in al entrar a pantalla 3 — accion de usuario.
         self._goto(self.show_screen3_processing)
 
         def run():
             for idx, (entry, folder_name) in enumerate(zip(ok_entries, explicit_names), 1):
+                # Si cancelaron a mitad del batch, no procesamos las restantes.
+                if self.cancel_event.is_set():
+                    break
                 pdf_path = entry["path"]
                 def wrap_progress(cur, total, msg, _idx=idx, _name=Path(pdf_path).name):
                     prefix = f"[{_idx}/{self._batch_total}] {_name} · "
@@ -2023,6 +2105,7 @@ class App:
                         use_grupal_when_no_individuals=use_grupal_no_ind,
                         dest_root=dest_root,
                         dest_folder_name=folder_name,
+                        cancel_event=self.cancel_event,
                     )
                     self._batch_results.append(res)
                 except Exception as e:
@@ -2034,14 +2117,32 @@ class App:
         threading.Thread(target=run, daemon=True).start()
 
     def _on_batch_done(self):
+        # Si todos los resultados estan marcados como cancelled, el usuario
+        # corto el proceso. Volvemos a pantalla 2 con un toast informativo,
+        # no a pantalla 3 result (no hay nada que mostrar).
+        cancelled_all = (
+            self._batch_results and
+            all(r.get("cancelled") for r in self._batch_results) and
+            not self._batch_errors
+        )
+        # Si NO hubo resultados (porque cancel antes del primer SKU) y
+        # tampoco errores, tambien fue cancelacion temprana.
+        early_cancel = (
+            not self._batch_results and not self._batch_errors
+            and getattr(self, "cancel_event", None) is not None
+            and self.cancel_event.is_set()
+        )
+        if cancelled_all or early_cancel:
+            self.toast("Proceso cancelado")
+            self.show_screen2()
+            return
+
         if not self._batch_results and self._batch_errors:
             # Todo fallo
             first = self._batch_errors[0]
             err = first["error"]
-            messagebox.showerror(
-                "Error procesando",
-                f"{type(err).__name__}: {err}",
-            )
+            title, body = _friendly_error(err)
+            messagebox.showerror(title, body)
             self.show_screen2()
             return
         # Notificación nativa de macOS (útil cuando estás en otra ventana)
@@ -2081,8 +2182,16 @@ class App:
             self.s3_pct_label.configure(text=f"{int(pct)}%")
         if self.s3_count_label and self.s3_count_label.winfo_exists():
             self.s3_count_label.configure(text=f"{current} de {total}")
+
+        # Status detallado: el processor emite mensajes como
+        # "[1/3] file.pdf · BRAND · SKU". Separamos la parte BRAND · SKU
+        # (detalle visual del SKU actual) del prefijo del batch para que el
+        # usuario vea exactamente que se esta procesando en cada momento.
+        status_text, detail_text = _split_status_detail(msg)
         if self.s3_msg_label and self.s3_msg_label.winfo_exists():
-            self.s3_msg_label.configure(text=msg)
+            self.s3_msg_label.configure(text=status_text)
+        if hasattr(self, "s3_detail_label") and self.s3_detail_label and self.s3_detail_label.winfo_exists():
+            self.s3_detail_label.configure(text=detail_text)
         # Guardamos el ratio para poder redibujar la barra cuando la ventana
         # se redimensiona (ver _redraw_progress_bar).
         ratio = (current / total) if total else 0
@@ -2143,15 +2252,45 @@ class App:
             bg=SURFACE, fg=TEXT_MUTED, anchor="w",
             wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
         )
-        self.s3_msg_label.pack(anchor="w", fill="x")
+        self.s3_msg_label.pack(anchor="w", fill="x", pady=(0, 4))
         _bind_dynamic_wraplength(self.s3_msg_label, margin=8)
+
+        # Mensaje secundario: detalle del SKU actual. El processor emite
+        # "{brand} · {sku}" en cada paso — lo separamos del estado general
+        # para que el usuario vea exactamente que se esta buscando ahora.
+        self.s3_detail_label = tk.Label(
+            inner, text="", font=FONT_BODY_BOLD,
+            bg=SURFACE, fg=TEXT, anchor="w",
+        )
+        self.s3_detail_label.pack(anchor="w", fill="x")
+        _bind_dynamic_wraplength(self.s3_detail_label, margin=8)
+
+        # Botón Cancelar abajo de la card (alineado a la derecha del body).
+        # Setea el cancel_event que el processor revisa entre SKUs.
+        cancel_row = tk.Frame(body, bg=BG)
+        cancel_row.pack(fill="x", pady=(SECTION_GAP, 0))
+        self.s3_cancel_btn = CanvasButton(
+            cancel_row, text="Cancelar",
+            command=self._on_cancel_processing, kind="secondary",
+        )
+        self.s3_cancel_btn.pack(side="right")
+
+    def _on_cancel_processing(self):
+        """Setea el cancel_event para que el processor pare entre SKUs.
+        No mata el thread bruto — espera el corte limpio. UI muestra
+        feedback inmediato cambiando el texto del label."""
+        if getattr(self, "cancel_event", None) is not None:
+            self.cancel_event.set()
+        # Actualizar UI: deshabilitar el boton y avisar al usuario.
+        if hasattr(self, "s3_cancel_btn") and self.s3_cancel_btn.winfo_exists():
+            self.s3_cancel_btn.set_enabled(False)
+        if hasattr(self, "s3_msg_label") and self.s3_msg_label.winfo_exists():
+            self.s3_msg_label.configure(text="Cancelando…")
 
     def _on_processing_done(self, res, exc):
         if exc:
-            messagebox.showerror(
-                "Error procesando",
-                f"{type(exc).__name__}: {exc}",
-            )
+            title, body = _friendly_error(exc)
+            messagebox.showerror(title, body)
             self.show_screen2()
             return
         self.result = res
@@ -2164,6 +2303,8 @@ class App:
         self.s3_pct_label = None
         self.s3_count_label = None
         self.s3_msg_label = None
+        self.s3_detail_label = None
+        self.s3_cancel_btn = None
 
         # Si hay >1 resultado, render batch. Si hay 1, render single (igual que antes).
         if len(self.results) > 1:

@@ -226,13 +226,18 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
 
 def process(pdf_path, modo, on_progress=None,
             use_grupal_when_no_individuals=False,
-            dest_root=None, dest_folder_name=None):
+            dest_root=None, dest_folder_name=None,
+            cancel_event=None):
     """Procesa una proforma de inicio a fin.
 
     Args:
-        pdf_path:    str/Path al PDF
-        modo:        "grupal" | "individual" | "complete"
-        on_progress: callable(actual:int, total:int, mensaje:str) - opcional
+        pdf_path:     str/Path al PDF
+        modo:         "grupal" | "individual" | "complete"
+        on_progress:  callable(actual:int, total:int, mensaje:str) - opcional
+        cancel_event: threading.Event opcional. Si se setea durante el
+                      proceso, el runner corta entre SKUs y retorna lo
+                      copiado hasta ese punto. El dict resultante tiene
+                      "cancelled": True.
 
     Returns:
         dict con keys:
@@ -242,6 +247,7 @@ def process(pdf_path, modo, on_progress=None,
             "copied"      : cantidad de fotos copiadas
             "missing"     : lista de dicts {"sku","qty","reason"} no encontrados
             "report_path" : Path del reporte.txt
+            "cancelled"   : True si el usuario cancelo a mitad del proceso
 
     Raises:
         ValueError                       : modo invalido
@@ -328,11 +334,15 @@ def process(pdf_path, modo, on_progress=None,
         copied_count, copied_per_brand = _run_complete(
             valid_items, year, dbx, dest, progress, missing,
             use_grupal_when_no_individuals=use_grupal_when_no_individuals,
+            cancel_event=cancel_event,
         )
     else:
         copied_count, copied_per_brand = _run_simple(
-            valid_items, modo, year, dbx, dest, progress, missing
+            valid_items, modo, year, dbx, dest, progress, missing,
+            cancel_event=cancel_event,
         )
+
+    cancelled = bool(cancel_event is not None and cancel_event.is_set())
 
     # SKUs por marca (de la proforma, no de copiadas) - para el reporte.
     from collections import Counter
@@ -356,7 +366,7 @@ def process(pdf_path, modo, on_progress=None,
         copied_per_brand=copied_per_brand,
     )
 
-    progress(1, 1, "Listo")
+    progress(1, 1, "Cancelado" if cancelled else "Listo")
 
     return {
         "dest": dest,
@@ -368,6 +378,7 @@ def process(pdf_path, modo, on_progress=None,
         "report_path": report_path,
         "skus_per_brand": dict(skus_per_brand),
         "copied_per_brand": dict(copied_per_brand),
+        "cancelled": cancelled,
     }
 
 
@@ -418,11 +429,14 @@ def _find_refs_without_individuals(valid_items, year, dbx):
 # Runners por modo
 # =============================================================================
 
-def _run_simple(valid_items, modo, year, dbx, dest, progress, missing):
+def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
+                cancel_event=None):
     """MODE_GRUPAL y MODE_INDIVIDUAL.
 
     - GRUPAL: dedup por (prefix, number), buscar grupal de cada referencia.
     - INDIVIDUAL: dedup por (prefix, number, variant, color), buscar individual.
+
+    Si cancel_event esta seteado entre SKUs, corta y retorna lo copiado.
     """
     seen = set()
     plan = []
@@ -438,6 +452,9 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing):
     copied_per_brand = Counter()
     total = len(plan)
     for idx, (parsed, item) in enumerate(plan, 1):
+        # Check cancel ANTES de cada SKU para corte rapido.
+        if cancel_event is not None and cancel_event.is_set():
+            return copied, copied_per_brand
         brand = parsed["brand"]
         progress(idx, total, f"{brand} · {item['sku']}")
         if modo == MODE_GRUPAL:
@@ -501,7 +518,8 @@ def _all_existing_covered(existing, ordered):
 
 
 def _run_complete(valid_items, year, dbx, dest, progress, missing,
-                  use_grupal_when_no_individuals=False):
+                  use_grupal_when_no_individuals=False,
+                  cancel_event=None):
     """MODE_COMPLETE: por cada referencia base, decidir grupal vs individuales.
 
     Regla: si la proforma pidio TODOS los colores que existen en disco para
@@ -532,6 +550,9 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
     total = len(order)
 
     for idx, key in enumerate(order, 1):
+        # Check cancel ANTES de cada referencia.
+        if cancel_event is not None and cancel_event.is_set():
+            return copied, copied_per_brand
         group = by_ref[key]
         ref_parsed = group["parsed"]
         items_for_ref = group["items"]
