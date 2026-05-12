@@ -1116,10 +1116,13 @@ class App:
         except tk.TclError:
             pass  # no estamos en macOS Tk - ignoramos
 
-        # IMPORTANTE: dropbox_status tiene que existir ANTES de show_screen1
-        # porque la pantalla 1 lee este atributo para pintar el chip del
-        # footer y dispara un re-check al inicializarse.
+        # IMPORTANTE: dropbox_status / _update_info / _update_banner_dismissed
+        # tienen que existir ANTES de show_screen1 porque la pantalla 1 los lee
+        # para pintar el chip del footer y para mostrar el banner de update.
         self.dropbox_status = None
+        self._update_info = None
+        self._update_banner_dismissed = False
+        self.s1_update_banner = None
 
         self.show_screen1()
 
@@ -1141,8 +1144,8 @@ class App:
         # una version mas nueva, mostramos un banner no-intrusivo arriba
         # de pantalla 1. El thread es daemon y completamente safe-to-fail:
         # sin internet o sin releases publicados, el banner no aparece.
-        self._update_info = None
-        self._update_banner_dismissed = False
+        # (Las flags _update_* ya estan inicializadas arriba, antes de
+        # show_screen1, para que esa pantalla pueda leerlas sin crashear.)
         threading.Thread(target=self._check_for_updates, daemon=True).start()
 
         # Nota: el modo light/dark se aplica al arrancar (ver
