@@ -2665,10 +2665,11 @@ class App:
         modo_id = self.modo_var.get()
         modo = next(m[3] for m in MODOS if m[0] == modo_id)
         # En modo "Grupal si esta completa", cuando la marca no tiene
-        # individuales en disco (ej. VOX), usamos la grupal como fallback
-        # en vez de marcar faltante. Hardcoded = True desde que sacamos la
-        # sub-opcion en pantalla 2 — Trafico siempre quiere ese comportamiento.
-        use_grupal_no_ind = True
+        # individuales en disco (ej. VOX), los SKUs se marcan como
+        # faltantes en el reporte (no se manda la grupal como fallback).
+        # Si Trafico quiere la grupal de esas marcas, usa el modo 1
+        # "Solo grupales" por separado.
+        use_grupal_no_ind = False
         dest_root = self.dest_root_var.get()
 
         # Persistir preferencias (no_ind queda por compat aunque ya no se usa).
