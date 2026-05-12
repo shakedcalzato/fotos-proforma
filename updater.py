@@ -132,6 +132,279 @@ def is_newer(remote, local):
     return r > l
 
 
+def is_frozen():
+    """True si la app esta corriendo desde un binario empaquetado por
+    PyInstaller (.app de Mac o .exe de Windows), False si esta corriendo
+    desde codigo fuente (`python main.py`). Solo permitimos auto-update
+    cuando esta frozen — en dev el usuario tiene git pull."""
+    import sys
+    return bool(getattr(sys, "frozen", False))
+
+
+def asset_for_current_platform(release_info):
+    """Identifica que asset del release bajar segun el SO actual.
+
+    Args:
+        release_info: dict de check_latest_release(), debe tener "assets"
+                      list raw del json. Si no esta (porque check no lo
+                      incluyo), devuelve None.
+
+    Returns:
+        dict con {name, browser_download_url, size} del asset apropiado,
+        o None si no hay match.
+
+    Convencion del proyecto:
+        - Mac: archivo .zip que contiene un .app (ej. FotosProforma.app.zip)
+        - Windows: archivo .exe directo (ej. FotosProforma.exe)
+    """
+    import sys
+    assets = release_info.get("assets") if isinstance(release_info, dict) else None
+    if not assets:
+        return None
+    is_mac = sys.platform == "darwin"
+    is_win = sys.platform.startswith("win")
+    for a in assets:
+        name = (a.get("name") or "").lower()
+        if is_mac and name.endswith(".app.zip"):
+            return a
+        if is_win and name.endswith(".exe"):
+            return a
+    return None
+
+
+def fetch_release_with_assets(timeout=6.0):
+    """Como check_latest_release pero conserva la lista de assets en el
+    dict devuelto. Necesario para descargar el binario apropiado."""
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                     context=_ssl_context()) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("draft") or data.get("prerelease"):
+        return None
+    if not data.get("tag_name"):
+        return None
+    return data  # dict crudo de la API, incluye "assets"
+
+
+def download_asset(asset, dest_path, progress_cb=None):
+    """Descarga un asset del release a dest_path. Llama progress_cb(done, total)
+    periodicamente si esta presente.
+
+    Returns:
+        True si la descarga termino completa, False si fallo.
+    """
+    url = asset.get("browser_download_url") or asset.get("url")
+    if not url:
+        return False
+    expected_size = int(asset.get("size") or 0)
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/octet-stream"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30,
+                                     context=_ssl_context()) as resp:
+            total = int(resp.headers.get("Content-Length") or expected_size)
+            done = 0
+            chunk_size = 64 * 1024
+            with open(dest_path, "wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(done, total)
+                        except Exception:
+                            pass
+        # Verificacion minima: tamaño coincide con el header.
+        import os
+        if total > 0 and os.path.getsize(dest_path) != total:
+            return False
+        return True
+    except Exception:
+        try:
+            import os
+            os.remove(dest_path)
+        except OSError:
+            pass
+        return False
+
+
+def install_update_and_restart(downloaded_path):
+    """Instala el update descargado y reinicia la app. La estrategia depende
+    de la plataforma:
+
+    - macOS: el binario actual es un .app (directorio). El descargado es un
+      .zip que contiene el .app nuevo. Un shell script de fondo:
+        1) espera ~2 segundos a que el proceso actual termine,
+        2) descomprime el zip,
+        3) reemplaza el .app viejo por el nuevo,
+        4) abre el nuevo .app,
+        5) se auto-borra.
+
+    - Windows: equivalente con un .bat. El binario es un .exe directo,
+      asi que el reemplazo es: timeout 2 → move /Y → start → del %0.
+
+    Despues de lanzar el script, la app principal hace sys.exit() para
+    liberar el binario.
+
+    Args:
+        downloaded_path: Path al archivo descargado (zip en Mac, exe en Win).
+
+    Returns:
+        True si el bootstrapper se lanzo OK. La app deberia cerrar despues.
+        False si algo fallo antes de lanzar el bootstrapper.
+    """
+    import sys
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path as _Path
+
+    if sys.platform == "darwin":
+        return _install_mac(downloaded_path)
+    if sys.platform.startswith("win"):
+        return _install_windows(downloaded_path)
+    return False  # Linux y otros: por ahora no soportado
+
+
+def _install_mac(zip_path):
+    """Bootstrapper macOS. Lanza un shell script que reemplaza el .app
+    y reinicia."""
+    import sys
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path as _Path
+
+    # sys.executable apunta a .../FotosProforma.app/Contents/MacOS/FotosProforma
+    # El .app es 3 niveles arriba.
+    exe = _Path(sys.executable).resolve()
+    if exe.parent.name != "MacOS":
+        return False
+    app_path = exe.parent.parent.parent  # FotosProforma.app
+    if app_path.suffix != ".app":
+        return False
+    parent = app_path.parent
+    app_name = app_path.name
+
+    # Script shell que hace todo el reemplazo. Lo escribimos a /tmp
+    # con permisos de ejecucion.
+    script = f"""#!/bin/bash
+set -e
+# Esperar a que el proceso actual cierre (PID lo pasamos como arg).
+PID="{os.getpid()}"
+for i in {{1..30}}; do
+    if ! kill -0 "$PID" 2>/dev/null; then break; fi
+    sleep 0.2
+done
+sleep 0.5
+
+ZIP="{zip_path}"
+PARENT="{parent}"
+OLD_APP="{app_path}"
+APP_NAME="{app_name}"
+
+# Descomprimir a tmp y mover el .app de adentro al PARENT.
+WORK=$(mktemp -d)
+unzip -q "$ZIP" -d "$WORK"
+NEW_APP=$(find "$WORK" -maxdepth 2 -name "*.app" -type d | head -n 1)
+if [ -z "$NEW_APP" ]; then
+    osascript -e 'display dialog "El update bajado no contiene un .app valido." buttons {{"OK"}}'
+    exit 1
+fi
+
+# Sacar quarantine attribute para evitar Gatekeeper preguntando de nuevo.
+xattr -dr com.apple.quarantine "$NEW_APP" 2>/dev/null || true
+
+# Reemplazar: rm viejo, mv nuevo.
+rm -rf "$OLD_APP"
+mv "$NEW_APP" "$PARENT/$APP_NAME"
+
+# Limpiar tmp.
+rm -rf "$WORK"
+rm -f "$ZIP"
+
+# Abrir la version nueva.
+open "$PARENT/$APP_NAME"
+
+# Auto-borrarse.
+rm -f "$0"
+"""
+    fd, script_path = tempfile.mkstemp(suffix=".sh", prefix="fotosproforma_update_")
+    with os.fdopen(fd, "w") as f:
+        f.write(script)
+    os.chmod(script_path, 0o755)
+
+    # Lanzar en background totalmente desacoplado del proceso actual.
+    subprocess.Popen(
+        ["/bin/bash", script_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    return True
+
+
+def _install_windows(exe_path):
+    """Bootstrapper Windows. Lanza un .bat que reemplaza el .exe y reinicia."""
+    import sys
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path as _Path
+
+    current_exe = _Path(sys.executable).resolve()
+    new_exe = _Path(exe_path).resolve()
+    target_dir = current_exe.parent
+
+    bat = f"""@echo off
+REM Esperar a que el proceso actual termine (PID = {os.getpid()})
+timeout /t 2 /nobreak >nul
+
+REM Reemplazar el exe (move sobreescribe en Windows con /Y).
+move /Y "{new_exe}" "{current_exe}" >nul 2>&1
+if errorlevel 1 (
+    echo Fallo el reemplazo. >> "%TEMP%\\fotosproforma_update.log"
+    pause
+    exit /b 1
+)
+
+REM Iniciar la version nueva.
+start "" "{current_exe}"
+
+REM Auto-borrarse.
+del "%~f0"
+"""
+    fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="fotosproforma_update_")
+    with os.fdopen(fd, "w") as f:
+        f.write(bat)
+
+    # Lanzar el .bat detached.
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    DETACHED_PROCESS         = 0x00000008
+    subprocess.Popen(
+        ["cmd.exe", "/c", bat_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+    )
+    return True
+
+
 # Smoke tests cuando se corre directo.
 if __name__ == "__main__":
     tests = [

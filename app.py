@@ -1483,8 +1483,9 @@ class App:
     def _check_for_updates(self):
         """Corre en thread daemon. Consulta la API de GitHub por el ultimo
         release; si es mas nuevo que APP_VERSION agenda mostrar el banner
-        en main thread."""
-        info = updater.check_latest_release()
+        en main thread. Usa fetch_release_with_assets para incluir la lista
+        de assets — necesario para la descarga directa del binario."""
+        info = updater.fetch_release_with_assets()
         if not info:
             return  # sin internet, sin releases, o fallo silencioso
         remote_tag = info.get("tag_name") or ""
@@ -1504,9 +1505,13 @@ class App:
 
     def _show_update_banner(self):
         """Crea un banner azul claro arriba del header con info de la
-        nueva version y 3 botones: Ver release / Mas tarde / Omitir.
-        Solo se muestra en pantalla 1 — en otras pantallas la guardamos
-        para mostrar despues."""
+        nueva version y 2 botones: Actualizar ahora / Mas tarde.
+        Solo se muestra en pantalla 1.
+
+        - Si la app esta frozen (.app/.exe empaquetado), el boton principal
+          dice "Actualizar ahora" y dispara descarga + reemplazo automatico.
+        - Si esta corriendo desde codigo fuente (dev), dice "Ver release" y
+          solo abre el browser (no tiene sentido auto-replace en dev)."""
         if not self._update_info or self._update_banner_dismissed:
             return
         if hasattr(self, "s1_update_banner") and self.s1_update_banner is not None \
@@ -1515,11 +1520,10 @@ class App:
 
         info = self._update_info
         version = info.get("tag_name", "?")
+        frozen = updater.is_frozen()
 
         banner = tk.Frame(self.container, bg=ACCENT_TINT)
         banner.pack(side="top", fill="x")
-        # Padding interno con sub-frame para que el bg azul llegue al borde
-        # pero el contenido tenga padding.
         inner = tk.Frame(banner, bg=ACCENT_TINT)
         inner.pack(fill="x", padx=SCREEN_PADX, pady=10)
 
@@ -1531,18 +1535,23 @@ class App:
             text=f"Hay una versión nueva disponible: {version}",
             font=FONT_BODY_BOLD, bg=ACCENT_TINT, fg=ACCENT, anchor="w",
         ).pack(anchor="w")
+        if frozen:
+            sub = "Click en 'Actualizar ahora' y la app se actualiza sola."
+        else:
+            sub = "Bajala desde la página del release y reemplazá la versión actual."
         tk.Label(
-            text,
-            text="Bajala desde la página del release y reemplazá la versión actual.",
+            text, text=sub,
             font=FONT_CAPTION, bg=ACCENT_TINT, fg=TEXT_MUTED, anchor="w",
         ).pack(anchor="w")
 
         # Botones a la derecha.
         btns = tk.Frame(inner, bg=ACCENT_TINT)
         btns.pack(side="right")
+        primary_text = "Actualizar ahora" if frozen else "Ver release"
+        primary_cmd  = self._perform_update if frozen else self._on_update_view
         CanvasButton(
-            btns, text="Ver release",
-            command=self._on_update_view, kind="primary",
+            btns, text=primary_text,
+            command=primary_cmd, kind="primary",
             height=32, padx=14, font=FONT_CAPTION,
             parent_bg=ACCENT_TINT,
         ).pack(side="left")
@@ -1574,6 +1583,112 @@ class App:
         En el proximo arranque vuelve a aparecer."""
         self._update_banner_dismissed = True
         self._hide_update_banner()
+
+    def _perform_update(self):
+        """Flujo "Actualizar ahora" cuando estamos en .app/.exe empaquetado:
+        - Identifica el asset apropiado en el release.
+        - Muestra modal con barra de progreso.
+        - Descarga en thread daemon.
+        - Lanza el bootstrapper (script externo) que reemplaza el binario.
+        - Sale de la app — el bootstrapper espera 2s y abre la version nueva.
+        """
+        info = self._update_info or {}
+        asset = updater.asset_for_current_platform(info)
+        if not asset:
+            messagebox.showerror(
+                "No hay version compatible",
+                "El release no tiene un binario para este sistema.\n\n"
+                "Probá descargarlo a mano con el botón 'Ver release'.",
+            )
+            return
+
+        # Modal overlay con progreso.
+        overlay = tk.Frame(self.root, bg=SURFACE)
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        overlay.lift()
+
+        center = tk.Frame(overlay, bg=SURFACE)
+        center.place(relx=0.5, rely=0.5, anchor="center")
+
+        tk.Label(
+            center, text=f"Actualizando a {info.get('tag_name', '')}",
+            font=FONT_DISPLAY, bg=SURFACE, fg=TEXT,
+        ).pack()
+        status = tk.Label(
+            center, text="Conectando…",
+            font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED,
+        )
+        status.pack(pady=(8, 14))
+
+        # Barra simple: Canvas con un rectangulo que se actualiza.
+        bar_canvas = tk.Canvas(
+            center, width=400, height=6, bg=BG, highlightthickness=0,
+        )
+        bar_canvas.pack()
+        bar = bar_canvas.create_rectangle(0, 0, 0, 6, fill=ACCENT, width=0)
+
+        pct_label = tk.Label(
+            center, text="0%", font=FONT_CAPTION, bg=SURFACE, fg=TEXT_MUTED,
+        )
+        pct_label.pack(pady=(8, 0))
+
+        # Path destino: temp con extension del asset.
+        import tempfile
+        from pathlib import Path as _Path
+        suffix = "".join(_Path(asset.get("name", "")).suffixes) or ".bin"
+        fd, dest = tempfile.mkstemp(prefix="fotosproforma_update_", suffix=suffix)
+        import os as _os
+        _os.close(fd)
+
+        def _on_progress(done, total):
+            # Re-postear al main thread para tocar widgets.
+            def _apply():
+                if not bar_canvas.winfo_exists():
+                    return
+                ratio = (done / total) if total else 0
+                w = int(bar_canvas.winfo_width() * ratio)
+                bar_canvas.coords(bar, 0, 0, w, 6)
+                pct = int(ratio * 100)
+                pct_label.configure(text=f"{pct}% — {done // 1024 // 1024} de {total // 1024 // 1024} MB")
+                if ratio > 0.1:
+                    status.configure(text="Descargando…")
+            try:
+                self.root.after(0, _apply)
+            except Exception:
+                pass
+
+        def _worker():
+            ok = updater.download_asset(asset, dest, progress_cb=_on_progress)
+            self.root.after(0, lambda: _on_finished(ok))
+
+        def _on_finished(ok):
+            if not ok:
+                try:
+                    overlay.destroy()
+                except Exception:
+                    pass
+                messagebox.showerror(
+                    "Descarga fallida",
+                    "No pude bajar el archivo. Verificá tu conexion e intentá de nuevo,\n"
+                    "o usá 'Más tarde' para descargar manualmente.",
+                )
+                return
+            status.configure(text="Instalando y reiniciando…")
+            # Lanzar bootstrapper. Si retorna True, salimos. Si retorna
+            # False, mostramos error y dejamos al usuario actualizar manual.
+            launched = updater.install_update_and_restart(dest)
+            if not launched:
+                overlay.destroy()
+                messagebox.showerror(
+                    "No pude instalar",
+                    "El reemplazo automatico fallo. Podés actualizar a mano:\n"
+                    "ver release → bajar el binario → reemplazar.",
+                )
+                return
+            # Salir de la app. El bootstrapper espera 2s y abre la nueva.
+            self.root.after(300, self._on_close)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ---- Dropbox status indicator (pre-flight + chip footer) ---------------
 
