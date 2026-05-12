@@ -24,8 +24,21 @@ None y la app sigue normal sin mostrar banner.
 
 import json
 import re
+import ssl
 import urllib.request
 import urllib.error
+
+
+def _ssl_context():
+    """Devuelve un SSL context valido para HTTPS. En macOS con Python.org
+    el default no tiene los CA root de Mozilla pre-instalados (SSL
+    CERTIFICATE_VERIFY_FAILED). Si certifi esta disponible, usamos su
+    bundle; sino cae al default del SO."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 # GitHub repo destino. Si el repo cambia (fork, rename), actualizar aca.
@@ -60,7 +73,8 @@ def check_latest_release(timeout=4.0):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                     context=_ssl_context()) as resp:
             raw = resp.read().decode("utf-8")
         data = json.loads(raw)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
