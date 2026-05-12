@@ -1136,11 +1136,12 @@ class App:
         # forzamos aca por si la pantalla 1 todavia no se renderizo.
         self._refresh_dropbox_status(force_async=True)
 
-        # Polling del modo del sistema (light/dark) cada 3 segundos. Si el
-        # usuario cambia el modo del OS mientras la app esta abierta, la
-        # detectamos y reapplicamos la paleta + re-renderizamos la pantalla
-        # actual con los colores nuevos.
-        self.root.after(3000, self._check_dark_mode_change)
+        # Nota: el modo light/dark se aplica al arrancar (ver
+        # _apply_palette_globals al cargar el modulo). Si el usuario cambia
+        # el modo del SO con la app abierta, el cambio se ve la proxima vez
+        # que cierre y reabra la app — no hacemos refresh en runtime porque
+        # el flicker durante el re-render se siente peor que el delay de
+        # tener que reiniciar.
 
         # Si la app fue invocada con PDF(s) como argumento (drag al .app desde
         # Finder antes de que la app este abierta) los cargamos.
@@ -1464,47 +1465,6 @@ class App:
             "reporte. ¿Procesar igual?"
         )
         return messagebox.askyesno(title, body, default="yes")
-
-    # ---- Modo oscuro/claro: polling para detectar cambios en runtime -------
-
-    def _check_dark_mode_change(self):
-        """Polling cada 3 segundos. Si el modo del SO cambio (light <-> dark)
-        reaplicamos la paleta globalmente y re-renderizamos la pantalla
-        actual. Si estamos procesando NO re-renderizamos (interrumpiria el
-        flujo) — se aplica la proxima vez que el usuario navegue."""
-        try:
-            new_dark = _detect_dark_mode()
-        except Exception:
-            new_dark = DARK_MODE
-        if new_dark != DARK_MODE:
-            _apply_palette_globals(new_dark)
-            # NO refresh durante procesamiento — la pantalla 3 procesando
-            # esta corriendo un thread que cambia widgets desde callbacks.
-            # Refrescar destruiria los widgets activos y rompe el flow.
-            if self._current_screen != "processing":
-                self._refresh_current_screen()
-        # Re-schedule. Cancelar si la app se cierra (root destruido).
-        try:
-            self.root.after(3000, self._check_dark_mode_change)
-        except tk.TclError:
-            pass
-
-    def _refresh_current_screen(self):
-        """Re-renderiza la pantalla actual con la paleta vigente. Usado
-        cuando cambia el modo del SO en runtime. Mantiene el state porque
-        los show_screenN leen de self.* (parsed_data_list, modo_var,
-        results, etc.)."""
-        screen = self._current_screen
-        try:
-            if screen == 1:
-                self.show_screen1()
-            elif screen == 2:
-                self.show_screen2()
-            elif screen == "result":
-                self.show_screen3_result()
-            # En "processing" no refresheamos — ya filtrado arriba.
-        except Exception as e:
-            _log_event(f"refresh_current_screen FAIL: {type(e).__name__}: {e}")
 
     # ---- Dropbox status indicator (pre-flight + chip footer) ---------------
 
