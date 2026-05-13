@@ -22,7 +22,7 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
 DEFAULTS = {
     "modo": "complete",
-    "no_ind": "grupal",
+    "no_ind": "missing",
     "dest_root": str(Path.home() / "Desktop" / "Fotos de Proformas"),
     # Geometria de la ventana del ultimo cierre, formato "WxH+X+Y". Vacio
     # significa "primer arranque, usar tamaño/posicion default y centrar".
