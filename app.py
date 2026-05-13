@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.5"
+APP_VERSION = "1.6"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -2362,50 +2362,19 @@ class App:
         modal.configure(bg=BG)
         modal.transient(self.root)
         modal.grab_set()
+        modal.minsize(480, 420)
         # Posicionar relativo al root.
         self.root.update_idletasks()
         rx = self.root.winfo_rootx()
         ry = self.root.winfo_rooty()
         rw = self.root.winfo_width()
         rh = self.root.winfo_height()
-        mw, mh = 520, 460
+        mw, mh = 540, 520
         x = rx + (rw - mw) // 2
         y = ry + (rh - mh) // 3
         modal.geometry(f"{mw}x{mh}+{x}+{y}")
 
-        # Header con titulo + descripcion.
-        header = tk.Frame(modal, bg=BG)
-        header.pack(fill="x", padx=24, pady=(20, 12))
-        tk.Label(
-            header, text="Pegar lista de referencias",
-            font=FONT_TITLE, bg=BG, fg=TEXT, anchor="w",
-        ).pack(anchor="w")
-        tk.Label(
-            header,
-            text="Una referencia por línea (también acepta separadas por coma o espacio).\n"
-                 "Ej.: GP15094/A/BLK, BB001/B/SURTIDO, …",
-            font=FONT_CAPTION, bg=BG, fg=TEXT_MUTED, anchor="w", justify="left",
-        ).pack(anchor="w", pady=(4, 0))
-
-        # Text area con scrollbar.
-        text_frame = tk.Frame(modal, bg=BG,
-                               highlightbackground=BORDER, highlightthickness=1)
-        text_frame.pack(fill="both", expand=True, padx=24, pady=(0, 12))
-        txt = tk.Text(
-            text_frame, font=FONT_MONO, bg=SURFACE, fg=TEXT,
-            relief="flat", bd=0, padx=10, pady=8,
-            insertbackground=TEXT, wrap="word",
-        )
-        vbar = tk.Scrollbar(text_frame, orient="vertical", command=txt.yview)
-        txt.configure(yscrollcommand=vbar.set)
-        txt.pack(side="left", fill="both", expand=True)
-        vbar.pack(side="right", fill="y")
-        txt.focus_set()
-
-        # Footer con botones.
-        footer = tk.Frame(modal, bg=BG)
-        footer.pack(fill="x", padx=24, pady=(0, 20))
-
+        # Handlers (definidos antes para usar en bindings).
         def _cancel():
             modal.grab_release()
             modal.destroy()
@@ -2423,6 +2392,11 @@ class App:
             modal.destroy()
             self._add_list_entry(parsed)
 
+        # FOOTER PRIMERO (side="bottom") para que reserve su espacio antes
+        # de que el text area expanda. Sino los botones quedan fuera de
+        # la ventana cuando el modal se ajusta.
+        footer = tk.Frame(modal, bg=BG)
+        footer.pack(side="bottom", fill="x", padx=24, pady=(8, 20))
         CanvasButton(
             footer, text="Cancelar", command=_cancel, kind="secondary",
             parent_bg=BG,
@@ -2431,6 +2405,35 @@ class App:
             footer, text="Cargar  →", command=_load, kind="primary",
             parent_bg=BG,
         ).pack(side="right")
+
+        # Header con titulo + descripcion.
+        header = tk.Frame(modal, bg=BG)
+        header.pack(side="top", fill="x", padx=24, pady=(20, 12))
+        tk.Label(
+            header, text="Pegar lista de referencias",
+            font=FONT_TITLE, bg=BG, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Una referencia por línea (también acepta separadas por coma o espacio).\n"
+                 "Ej.: GP15094/A/BLK, BB001/B/SURTIDO, …",
+            font=FONT_CAPTION, bg=BG, fg=TEXT_MUTED, anchor="w", justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Text area con scrollbar — ocupa el resto.
+        text_frame = tk.Frame(modal, bg=BG,
+                               highlightbackground=BORDER, highlightthickness=1)
+        text_frame.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+        txt = tk.Text(
+            text_frame, font=FONT_MONO, bg=SURFACE, fg=TEXT,
+            relief="flat", bd=0, padx=10, pady=8,
+            insertbackground=TEXT, wrap="word",
+        )
+        vbar = tk.Scrollbar(text_frame, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=vbar.set)
+        txt.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="right", fill="y")
+        txt.focus_set()
 
         # Esc cierra el modal, Cmd+Enter / Ctrl+Enter carga.
         modal.bind("<Escape>", lambda e: _cancel())
