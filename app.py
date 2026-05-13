@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.15"
+APP_VERSION = "1.16"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -3533,7 +3533,10 @@ class App:
             mi = tk.Frame(mc, bg=SURFACE)
             mi.pack(padx=24, pady=18, fill="both", expand=True)
 
-            sorted_missing = sorted(missing, key=lambda m: -m["qty"])
+            # Orden alfabetico por SKU para que sea facil ubicar una ref.
+            # (Antes ordenabamos por qty descendente — cambiar a alfabetico
+            # facilita buscar visualmente.)
+            sorted_missing = sorted(missing, key=lambda m: (m.get("sku") or "").upper())
 
             # Header con label + boton "Copiar todos" a la derecha
             header_row = tk.Frame(mi, bg=SURFACE)
@@ -3632,7 +3635,9 @@ class App:
                 all_missing.append({**m, "proforma": proforma_name})
 
         if all_missing:
-            sorted_all = sorted(all_missing, key=lambda m: -m["qty"])
+            # Orden alfabetico por SKU para que sea facil ubicar una ref
+            # en el batch (mismo orden que en single).
+            sorted_all = sorted(all_missing, key=lambda m: (m.get("sku") or "").upper())
             mc2 = Card(body)
             mc2.pack(fill="both", expand=True)
             mi2 = tk.Frame(mc2, bg=SURFACE)
