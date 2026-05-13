@@ -395,6 +395,7 @@ def _install_windows(exe_path):
     cur_s = _esc(current_exe)
     new_s = _esc(new_exe)
     old_s = _esc(old_path)
+    cur_dir_s = _esc(current_exe.parent)
 
     fail_msg = (
         f"No pude reemplazar el .exe automaticamente.\n\n"
@@ -484,9 +485,58 @@ if (-not $moved) {{
 Remove-Item -LiteralPath '{old_s}' -Force -ErrorAction SilentlyContinue
 Log "Reemplazo completado"
 
-# 7. Iniciar la version nueva.
+# 6.5 Sacar el zone identifier del archivo recien movido (Windows
+# marca como "bajado de internet" — puede impedir ejecucion automatica
+# por SmartScreen sin dialogo visible).
+Log "Limpiando zone identifier del exe final..."
+Unblock-File -LiteralPath '{cur_s}' -ErrorAction SilentlyContinue
+
+# 7. Iniciar la version nueva — intentamos 3 metodos en secuencia
+# porque Start-Process puede fallar silenciosamente con .exe sin
+# firmar (SmartScreen). Si todos fallan, MessageBox al usuario.
 Log "Iniciando version nueva..."
-Start-Process -FilePath '{cur_s}'
+$launched = $false
+
+# Metodo A: Start-Process con WorkingDirectory explicito.
+try {{
+    Start-Process -FilePath '{cur_s}' -WorkingDirectory '{cur_dir_s}' -ErrorAction Stop
+    $launched = $true
+    Log "Launch metodo A (Start-Process) OK"
+}} catch {{
+    Log "Launch metodo A fallo: $($_.Exception.Message)"
+}}
+
+# Metodo B: Invoke-Item (equivalente a doble-click en Explorer).
+if (-not $launched) {{
+    try {{
+        Invoke-Item -LiteralPath '{cur_s}' -ErrorAction Stop
+        $launched = $true
+        Log "Launch metodo B (Invoke-Item) OK"
+    }} catch {{
+        Log "Launch metodo B fallo: $($_.Exception.Message)"
+    }}
+}}
+
+# Metodo C: cmd /c start (mas tolerante).
+if (-not $launched) {{
+    try {{
+        Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','start','""','"{cur_s}"' -WindowStyle Hidden -ErrorAction Stop
+        $launched = $true
+        Log "Launch metodo C (cmd start) OK"
+    }} catch {{
+        Log "Launch metodo C fallo: $($_.Exception.Message)"
+    }}
+}}
+
+if (-not $launched) {{
+    Log "FALLO TODOS los launches — avisar al usuario"
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(
+        'La actualizacion termino correctamente pero no pude abrir la version nueva automaticamente.' + "`n`n" +
+        'Hace doble click en el icono de Fotos Proforma para abrirla.',
+        'Fotos Proforma - Actualizacion lista', 'OK', 'Information'
+    ) | Out-Null
+}}
 
 # 8. Auto-borrar este script.
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
