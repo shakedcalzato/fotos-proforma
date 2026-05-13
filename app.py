@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -355,11 +355,69 @@ FORMAT_LABELS = {
     "sap_pedido":      "SAP · Pedido",
     "sap_proforma":    "SAP · Proforma",
     "sap_cotizacion":  "SAP · Cotización",
+    "lista":           "Lista de referencias",
 }
 
 def _fmt_label(fmt):
     """Devuelve la etiqueta human-readable del formato; fallback al id crudo."""
     return FORMAT_LABELS.get(fmt, fmt or "")
+
+
+# Path "virtual" usado como identificador unico para entradas tipo
+# "lista de referencias" en parsed_data_list. No es un path real en disco;
+# solo evita colisiones con paths de PDFs y se distingue al procesar.
+LIST_VIRTUAL_PATH_PREFIX = "<lista>:"
+
+
+def _display_name_for_path(path):
+    """Devuelve un nombre legible para mostrar en la UI. Si es un path
+    virtual de lista pegada, devuelve "Lista de referencias" en vez de
+    la basura sintetica del path interno."""
+    if isinstance(path, str) and path.startswith(LIST_VIRTUAL_PATH_PREFIX):
+        return "Lista de referencias"
+    return Path(path).name
+
+
+def _parse_sku_list_text(text):
+    """Convierte un texto pegado por el usuario en una lista de items
+    compatible con el shape que devuelve pdf_dispatch.parse().
+
+    Acepta separadores: salto de linea, coma, punto y coma, tab, espacio.
+    Filtra lineas vacias / comentarios (#...). Cada SKU validado con
+    parse_sku — los que no pasan validacion se devuelven igual como item
+    (el processor los va a marcar como "marca no reconocida").
+
+    Returns:
+        dict con shape {format: "lista", client: None, items: [{...}]}.
+        items vacio si el texto no tiene nada parseable.
+    """
+    import re
+    if not text:
+        return {"format": "lista", "client": None, "items": []}
+    # Sacar comentarios y dividir por cualquier separador comun.
+    tokens = []
+    for line in text.split("\n"):
+        line = line.split("#", 1)[0]  # comentario inline
+        for tok in re.split(r"[\s,;]+", line):
+            tok = tok.strip()
+            if tok:
+                tokens.append(tok)
+    # Dedup preservando orden de primera aparicion.
+    seen = set()
+    items = []
+    for tok in tokens:
+        if tok in seen:
+            continue
+        seen.add(tok)
+        # qty=0 — la lista manual no tiene cantidades. El processor
+        # busca fotos igual, solo afecta lo que sale en el reporte.
+        items.append({
+            "sku": tok,
+            "qty": 0,
+            "suspect": False,
+            "raw": tok,
+        })
+    return {"format": "lista", "client": None, "items": items}
 
 # Carpeta destino default (la carpeta padre donde se crean las subcarpetas
 # por proforma). El usuario puede cambiarla en pantalla 2.
@@ -2260,6 +2318,14 @@ class App:
             parent_bg=SURFACE,
         ).pack(side="left")
 
+        # Botón "Pegar lista..." — alternativa al PDF: el usuario pega un
+        # listado de SKUs sin tener una proforma en PDF.
+        CanvasButton(
+            self.s1_pick_btn_row, text="Pegar lista...",
+            command=self._on_paste_list, kind="secondary",
+            parent_bg=SURFACE,
+        ).pack(side="left", padx=(8, 0))
+
         if has_files:
             CanvasButton(
                 self.s1_pick_btn_row, text="Limpiar",
@@ -2284,6 +2350,112 @@ class App:
         if not paths:
             return
         self._add_pdf_paths(list(paths))
+
+    def _on_paste_list(self):
+        """Abre un modal donde el usuario puede pegar/escribir un listado
+        de referencias (SKUs uno por linea, o separados por coma, espacio,
+        etc). Al confirmar, crea un entry virtual en parsed_data_list que
+        sigue el mismo flujo de procesamiento que un PDF."""
+        # Toplevel modal centrado sobre la ventana principal.
+        modal = tk.Toplevel(self.root)
+        modal.title("Pegar lista de referencias")
+        modal.configure(bg=BG)
+        modal.transient(self.root)
+        modal.grab_set()
+        # Posicionar relativo al root.
+        self.root.update_idletasks()
+        rx = self.root.winfo_rootx()
+        ry = self.root.winfo_rooty()
+        rw = self.root.winfo_width()
+        rh = self.root.winfo_height()
+        mw, mh = 520, 460
+        x = rx + (rw - mw) // 2
+        y = ry + (rh - mh) // 3
+        modal.geometry(f"{mw}x{mh}+{x}+{y}")
+
+        # Header con titulo + descripcion.
+        header = tk.Frame(modal, bg=BG)
+        header.pack(fill="x", padx=24, pady=(20, 12))
+        tk.Label(
+            header, text="Pegar lista de referencias",
+            font=FONT_TITLE, bg=BG, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Una referencia por línea (también acepta separadas por coma o espacio).\n"
+                 "Ej.: GP15094/A/BLK, BB001/B/SURTIDO, …",
+            font=FONT_CAPTION, bg=BG, fg=TEXT_MUTED, anchor="w", justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Text area con scrollbar.
+        text_frame = tk.Frame(modal, bg=BG,
+                               highlightbackground=BORDER, highlightthickness=1)
+        text_frame.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+        txt = tk.Text(
+            text_frame, font=FONT_MONO, bg=SURFACE, fg=TEXT,
+            relief="flat", bd=0, padx=10, pady=8,
+            insertbackground=TEXT, wrap="word",
+        )
+        vbar = tk.Scrollbar(text_frame, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=vbar.set)
+        txt.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="right", fill="y")
+        txt.focus_set()
+
+        # Footer con botones.
+        footer = tk.Frame(modal, bg=BG)
+        footer.pack(fill="x", padx=24, pady=(0, 20))
+
+        def _cancel():
+            modal.grab_release()
+            modal.destroy()
+
+        def _load():
+            raw = txt.get("1.0", "end").strip()
+            if not raw:
+                self.toast("Pegá al menos una referencia")
+                return
+            parsed = _parse_sku_list_text(raw)
+            if not parsed["items"]:
+                self.toast("No encontré ninguna referencia")
+                return
+            modal.grab_release()
+            modal.destroy()
+            self._add_list_entry(parsed)
+
+        CanvasButton(
+            footer, text="Cancelar", command=_cancel, kind="secondary",
+            parent_bg=BG,
+        ).pack(side="left")
+        CanvasButton(
+            footer, text="Cargar  →", command=_load, kind="primary",
+            parent_bg=BG,
+        ).pack(side="right")
+
+        # Esc cierra el modal, Cmd+Enter / Ctrl+Enter carga.
+        modal.bind("<Escape>", lambda e: _cancel())
+        modal.bind("<Command-Return>", lambda e: _load())
+        modal.bind("<Control-Return>", lambda e: _load())
+
+    def _add_list_entry(self, parsed):
+        """Agrega una entrada tipo "lista" al batch de proformas. Usa un
+        path virtual unico para distinguirla de PDFs reales en el flow."""
+        import datetime
+        # Path virtual unico (con timestamp para permitir varias listas en
+        # el mismo batch).
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        virtual_path = f"{LIST_VIRTUAL_PATH_PREFIX}{ts}"
+        entry = {"path": virtual_path, "parsed": parsed}
+        self.pdf_paths.append(virtual_path)
+        self.parsed_data_list.append(entry)
+        # StringVar para el nombre de carpeta — el usuario lo edita en pantalla 2.
+        # Como la lista no tiene cliente detectado, default vacio para que
+        # el usuario lo escriba.
+        self.client_override_vars[virtual_path] = tk.StringVar(value="Lista de referencias")
+        n = len(parsed["items"])
+        self.toast(f"Lista cargada · {n} referencia{'s' if n != 1 else ''}")
+        if hasattr(self, "s1_path_label") and self.s1_path_label.winfo_exists():
+            self._render_s1_info()
 
     def _on_dropzone_drop(self, paths):
         """Callback de DropZone cuando el usuario suelta archivos arrastrados.
@@ -2419,7 +2591,9 @@ class App:
         # Actualizar el path label segun cuantos PDFs hay
         n = len(self.parsed_data_list)
         if n == 1:
-            self.s1_path_label.configure(text=Path(self.pdf_paths[0]).name, fg=TEXT)
+            self.s1_path_label.configure(
+                text=_display_name_for_path(self.pdf_paths[0]), fg=TEXT,
+            )
         else:
             self.s1_path_label.configure(text=f"{n} proformas seleccionadas", fg=TEXT)
 
@@ -2561,7 +2735,7 @@ class App:
         for entry in self.parsed_data_list:
             row = tk.Frame(inner, bg=SURFACE)
             row.pack(fill="x", pady=3)
-            name = Path(entry["path"]).name
+            name = _display_name_for_path(entry["path"])
             path = entry["path"]
 
             # Boton × a la derecha para quitar este PDF del batch.
@@ -2620,7 +2794,7 @@ class App:
         self._current_screen = 2
         n = len(self.pdf_paths)
         if n == 1:
-            subtitle = f"PDF: {Path(self.pdf_paths[0]).name}"
+            subtitle = f"PDF: {_display_name_for_path(self.pdf_paths[0])}"
         elif n > 1:
             subtitle = f"{n} proformas · misma configuración para todas"
         else:
@@ -2706,12 +2880,12 @@ class App:
                     font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT, anchor="w",
                 ).pack(anchor="w", pady=(6, 0))
             else:
-                # Una sección por PDF
+                # Una sección por PDF / lista
                 for entry in ok_entries:
                     row = tk.Frame(body, bg=BG)
                     row.pack(fill="x", pady=(0, 10))
                     tk.Label(
-                        row, text=Path(entry["path"]).name,
+                        row, text=_display_name_for_path(entry["path"]),
                         font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT, anchor="w",
                     ).pack(anchor="w", pady=(0, 4))
                     var = self._get_or_create_override_var(entry)
@@ -2837,17 +3011,22 @@ class App:
                 if self.cancel_event.is_set():
                     break
                 pdf_path = entry["path"]
-                def wrap_progress(cur, total, msg, _idx=idx, _name=Path(pdf_path).name):
+                # Detectar entries virtuales (listas pegadas): el processor
+                # recibe pdf_path=None + parsed_override con los items.
+                is_list = pdf_path.startswith(LIST_VIRTUAL_PATH_PREFIX)
+                display_name = "Lista" if is_list else Path(pdf_path).name
+                def wrap_progress(cur, total, msg, _idx=idx, _name=display_name):
                     prefix = f"[{_idx}/{self._batch_total}] {_name} · "
                     self._safe_progress_cb(cur, total, prefix + msg)
                 try:
                     res = processor.process(
-                        pdf_path, modo,
+                        None if is_list else pdf_path, modo,
                         on_progress=wrap_progress,
                         use_grupal_when_no_individuals=use_grupal_no_ind,
                         dest_root=dest_root,
                         dest_folder_name=folder_name,
                         cancel_event=self.cancel_event,
+                        parsed_override=entry["parsed"] if is_list else None,
                     )
                     self._batch_results.append(res)
                 except Exception as e:

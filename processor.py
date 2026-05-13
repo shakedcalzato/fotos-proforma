@@ -227,17 +227,21 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
 def process(pdf_path, modo, on_progress=None,
             use_grupal_when_no_individuals=False,
             dest_root=None, dest_folder_name=None,
-            cancel_event=None):
+            cancel_event=None, parsed_override=None):
     """Procesa una proforma de inicio a fin.
 
     Args:
-        pdf_path:     str/Path al PDF
-        modo:         "grupal" | "individual" | "complete"
-        on_progress:  callable(actual:int, total:int, mensaje:str) - opcional
-        cancel_event: threading.Event opcional. Si se setea durante el
-                      proceso, el runner corta entre SKUs y retorna lo
-                      copiado hasta ese punto. El dict resultante tiene
-                      "cancelled": True.
+        pdf_path:         str/Path al PDF, o None si parsed_override viene.
+        modo:             "grupal" | "individual" | "complete"
+        on_progress:      callable(actual:int, total:int, mensaje:str) - opcional
+        cancel_event:     threading.Event opcional. Si se setea durante el
+                          proceso, el runner corta entre SKUs y retorna lo
+                          copiado hasta ese punto. El dict resultante tiene
+                          "cancelled": True.
+        parsed_override:  dict {format, client, items} con los items pre-
+                          parseados. Si se pasa, se saltea el parseo del PDF
+                          (modo "lista de referencias" sin archivo). En este
+                          caso pdf_path puede ser None.
 
     Returns:
         dict con keys:
@@ -266,8 +270,13 @@ def process(pdf_path, modo, on_progress=None,
         if on_progress:
             on_progress(i, n, msg)
 
-    progress(0, 1, "Leyendo PDF...")
-    parsed_result = pdf_dispatch.parse(str(pdf_path))
+    # Origen de los items: PDF parseado, o dict override (modo lista).
+    if parsed_override is not None:
+        progress(0, 1, "Leyendo lista de referencias...")
+        parsed_result = parsed_override
+    else:
+        progress(0, 1, "Leyendo PDF...")
+        parsed_result = pdf_dispatch.parse(str(pdf_path))
     items = parsed_result["items"]
     fmt = parsed_result["format"]
     client = parsed_result.get("client")
@@ -304,13 +313,15 @@ def process(pdf_path, modo, on_progress=None,
 
     # Copiar el PDF de la proforma a destino con prefijo "01_" para que aparezca
     # primero en Finder, antes que el reporte ("02_") y las fotos.
-    pdf_src = Path(pdf_path)
-    proforma_target = dest / f"01_{pdf_src.name}"
-    try:
-        shutil.copy2(pdf_src, proforma_target)
-    except OSError:
-        # Si falla la copia de la proforma seguimos igual; no es bloqueante.
-        pass
+    # En modo "lista de referencias" no hay PDF que copiar — skipeamos.
+    if pdf_path is not None:
+        pdf_src = Path(pdf_path)
+        proforma_target = dest / f"01_{pdf_src.name}"
+        try:
+            shutil.copy2(pdf_src, proforma_target)
+        except OSError:
+            # Si falla la copia de la proforma seguimos igual; no es bloqueante.
+            pass
 
     # Validar items: separar reconocidos de marcas desconocidas
     valid_items = []   # lista de (parsed, item)
@@ -355,7 +366,7 @@ def process(pdf_path, modo, on_progress=None,
     # Escribir reporte
     report_path = _write_report(
         dest=dest,
-        pdf_path=Path(pdf_path),
+        pdf_path=Path(pdf_path) if pdf_path else None,
         modo=modo,
         fmt=fmt,
         client=client,
@@ -646,6 +657,7 @@ _FMT_LABELS = {
     "sap_pedido":     "SAP Business One (Pedido)",
     "sap_proforma":   "SAP Business One (Proforma de Cliente)",
     "sap_cotizacion": "SAP Business One (Cotización de Cliente)",
+    "lista":          "Lista de referencias (sin PDF)",
 }
 
 
@@ -661,7 +673,7 @@ def _write_report(dest, pdf_path, modo, fmt, client, total_skus, copied, missing
     lines.append("=" * 60)
     lines.append(f"Fecha y hora      : {now.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Cliente           : {client or '(no detectado)'}")
-    lines.append(f"Archivo PDF       : {pdf_path.name}")
+    lines.append(f"Archivo PDF       : {pdf_path.name if pdf_path else '(lista manual)'}")
     lines.append(f"Formato detectado : {_FMT_LABELS.get(fmt, fmt)}")
     lines.append(f"Modo de fotos     : {_format_modo_label(modo)}")
     lines.append("")
