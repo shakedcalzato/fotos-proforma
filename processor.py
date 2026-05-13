@@ -747,18 +747,12 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                     copied += 1
                     copied_per_brand[brand] += 1
                     mandated_individuals = True
-            # Caso especial: estaba completa, no hay grupal, Y mandamos
-            # individuales reales. Reportamos como info que la grupal falto.
-            if is_complete and not grupal_src and mandated_individuals:
-                total_pares = sum(
-                    it["qty"] for p, it in items_for_ref if not is_surtido(p)
-                )
-                missing.append({
-                    "sku": ref_label,
-                    "qty": total_pares,
-                    "reason": "Grupal no encontrada (se mandan individuales)",
-                    "brand": brand,
-                })
+            # NOTA: si la marca no tiene grupales en disco (ej Sneakers
+            # Supply) pero las individuales se mandaron OK, NO agregamos
+            # nada al reporte de faltantes. Las fotos estan en la carpeta,
+            # asi que no es una "falta" real — solo confundia al usuario
+            # que veia mensajes de "Grupal no encontrada" cuando todo
+            # estaba bien.
 
     return copied, copied_per_brand
 
