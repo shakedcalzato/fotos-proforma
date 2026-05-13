@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.10"
+APP_VERSION = "1.11"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -1235,6 +1235,13 @@ class App:
         # show_screen1, para que esa pantalla pueda leerlas sin crashear.)
         threading.Thread(target=self._check_for_updates, daemon=True).start()
 
+        # Auto-install local: si el .exe esta corriendo desde una carpeta
+        # de cloud-sync (Dropbox, OneDrive, etc), ofrecemos copiarlo a
+        # %LOCALAPPDATA% asi el auto-update funciona sin que Dropbox lo
+        # revierta. Se hace despues de show_screen1 para que la pantalla
+        # ya este montada cuando aparece el dialog.
+        self.root.after(800, self._check_install_location)
+
         # Nota: el modo light/dark se aplica al arrancar (ver
         # _apply_palette_globals al cargar el modulo). Si el usuario cambia
         # el modo del SO con la app abierta, el cambio se ve la proxima vez
@@ -1585,6 +1592,159 @@ class App:
             "reporte. ¿Procesar igual?"
         )
         return messagebox.askyesno(title, body, default="yes")
+
+    # ---- Auto-install local (cuando corre desde Dropbox/OneDrive) -----------
+
+    def _check_install_location(self):
+        """Detecta si el .exe esta corriendo desde una carpeta sincronizada
+        por cloud (Dropbox, OneDrive, Google Drive, iCloud). Si si, ofrece
+        copiarse a %LOCALAPPDATA%\\FotosProforma\\FotosProforma.exe — una
+        ubicacion local estable donde el auto-update funciona sin que
+        Dropbox revierta el reemplazo.
+
+        Solo aplica a Windows con .exe empaquetado. En Mac no hay este
+        problema porque los .app van a Applications.
+        """
+        import sys as _sys
+        import os as _os
+
+        if not updater.is_frozen():
+            return  # corriendo desde codigo fuente — no aplica
+        if not platform_utils.IS_WINDOWS:
+            return  # mac/linux no tienen el problema reportado
+
+        try:
+            exe_path = Path(_sys.executable).resolve()
+        except Exception:
+            return
+        exe_lower = str(exe_path).lower().replace("\\", "/")
+
+        # Detectar carpetas sincronizadas conocidas en el path.
+        sync_keywords = {
+            "/dropbox":      "Dropbox",
+            "/onedrive":     "OneDrive",
+            "/google drive": "Google Drive",
+            "/googledrive":  "Google Drive",
+            "/iclouddrive":  "iCloud Drive",
+        }
+        detected = None
+        for kw, label in sync_keywords.items():
+            if kw in exe_lower:
+                detected = label
+                break
+        if not detected:
+            return  # ya estamos en una ubicacion local — todo OK
+
+        # Destino: %LOCALAPPDATA%\FotosProforma\FotosProforma.exe
+        appdata = _os.environ.get("LOCALAPPDATA")
+        if not appdata:
+            return
+        target_dir = Path(appdata) / "FotosProforma"
+        target_exe = target_dir / "FotosProforma.exe"
+
+        # Si ya existe la version local y NO somos esa, sugerir cambiar.
+        try:
+            already_installed = target_exe.exists() and target_exe.resolve() != exe_path
+        except Exception:
+            already_installed = target_exe.exists()
+
+        if already_installed:
+            msg = (
+                f"Detecté que ya tenés Fotos Proforma instalada localmente en:\n\n"
+                f"  {target_exe}\n\n"
+                f"Esta versión que abriste está en {detected} y las actualizaciones automáticas no funcionan bien desde ahí.\n\n"
+                "¿Querés que abra la versión local y cierre esta?"
+            )
+            if messagebox.askyesno("Versión local disponible", msg):
+                self._launch_and_quit(target_exe)
+            return
+
+        # Primera vez: ofrecer copia a la ubicacion local.
+        msg = (
+            f"Detecté que la app está corriendo desde {detected}.\n\n"
+            "Las actualizaciones automáticas no funcionan bien desde carpetas sincronizadas "
+            "(Dropbox revierte los cambios).\n\n"
+            f"¿Querés que me copie a tu computadora?\n\n"
+            f"   • Voy a copiarme a {target_exe}\n"
+            f"   • Creo un acceso directo en tu escritorio\n"
+            f"   • El archivo en {detected} queda intacto\n"
+            "   • Las próximas actualizaciones se aplican solas"
+        )
+        if not messagebox.askyesno("Mejor instalación recomendada", msg):
+            return  # usuario rechazo, seguir andando desde Dropbox
+
+        # Hacer la instalacion local.
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            import shutil as _shutil
+            _shutil.copy2(exe_path, target_exe)
+            _log_event(f"Install local: copiado {exe_path} -> {target_exe}")
+        except Exception as e:
+            _log_event(f"Install local FAIL copia: {type(e).__name__}: {e}")
+            messagebox.showerror(
+                "No pude instalar localmente",
+                f"Falló la copia a {target_exe}\n\n{type(e).__name__}: {e}",
+            )
+            return
+
+        # Crear shortcut en el escritorio para que sea facil de encontrar.
+        try:
+            self._create_desktop_shortcut(target_exe)
+        except Exception as e:
+            _log_event(f"Install local shortcut FAIL: {type(e).__name__}: {e}")
+            # No es bloqueante — la app igual queda en LOCALAPPDATA.
+
+        # Abrir la version local y cerrar esta.
+        self._launch_and_quit(target_exe)
+
+    def _launch_and_quit(self, target_exe):
+        """Lanza el .exe en target_exe y cierra esta instancia."""
+        import subprocess as _sub
+        try:
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            _sub.Popen(
+                [str(target_exe)],
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                stdout=_sub.DEVNULL, stderr=_sub.DEVNULL, stdin=_sub.DEVNULL,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "No pude abrir la versión local",
+                f"{type(e).__name__}: {e}\n\nAbrila a mano desde {target_exe}",
+            )
+            return
+        # Cerrar esta app despues de un breve delay para que el lanzamiento
+        # alcance a registrar el proceso.
+        self.root.after(500, self._on_close)
+
+    def _create_desktop_shortcut(self, target_exe):
+        """Crea un .lnk en el escritorio del usuario apuntando al target_exe.
+        Usa PowerShell con WScript.Shell COM — viene en todo Windows desde
+        Win XP. Si falla, no crashea, solo loguea."""
+        import os as _os
+        import subprocess as _sub
+        desktop = Path(_os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+        if not desktop.is_dir():
+            return
+        lnk_path = desktop / "Fotos Proforma.lnk"
+        target_str = str(target_exe).replace("'", "''")
+        lnk_str = str(lnk_path).replace("'", "''")
+        wd_str = str(target_exe.parent).replace("'", "''")
+        ps_cmd = (
+            f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{lnk_str}'); "
+            f"$s.TargetPath = '{target_str}'; "
+            f"$s.WorkingDirectory = '{wd_str}'; "
+            f"$s.IconLocation = '{target_str}'; "
+            f"$s.Save()"
+        )
+        _sub.run(
+            ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+            stdout=_sub.DEVNULL, stderr=_sub.DEVNULL,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            timeout=10,
+        )
+        _log_event(f"Shortcut creado: {lnk_path}")
 
     # ---- Auto-update (chequeo de releases en GitHub) ------------------------
 

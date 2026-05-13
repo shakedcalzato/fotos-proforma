@@ -243,6 +243,15 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None,
                 shutil.copy2(src, target)
         else:
             shutil.copy2(src, target)
+
+        # Replicar en "Todas las fotos" si estamos copiando a una subcarpeta
+        # de marca. Es la version "flat" para que el usuario pueda copiar/pegar
+        # todo a WhatsApp / correo sin entrar marca por marca.
+        # Usamos hardlink (mismo inode) si el filesystem lo soporta — no
+        # ocupa el doble de espacio en disco. Si falla, cae a copia real.
+        if brand_subfolder:
+            _replicate_to_all_folder(target, dest)
+
         return True
     except OSError as e:
         if item is not None:
@@ -251,6 +260,41 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None,
                 "reason": _format_copy_error(e, src, target),
             })
         return False
+
+
+def _replicate_to_all_folder(src_in_brand, dest_root):
+    """Crea una copia (hardlink si se puede, sino copia real) del archivo
+    recien copiado a una marca, en una carpeta "Todas las fotos" en la raiz
+    del destino. Asi el usuario tiene tanto la version por marca como una
+    version flat con todo junto.
+
+    Falla silenciosamente: la carpeta es nice-to-have, no critica.
+    """
+    try:
+        all_dir = dest_root / "Todas las fotos"
+        all_dir.mkdir(parents=True, exist_ok=True)
+        target = all_dir / src_in_brand.name
+        if target.exists():
+            # Colision: agregar sufijo numerico igual que en _copy_to_dest.
+            stem, ext = target.stem, target.suffix
+            i = 2
+            while True:
+                candidate = all_dir / f"{stem}_{i}{ext}"
+                if not candidate.exists():
+                    target = candidate
+                    break
+                i += 1
+        # Intentar hardlink primero (no usa espacio extra en disco).
+        try:
+            import os as _os
+            _os.link(src_in_brand, target)
+        except (OSError, AttributeError, NotImplementedError):
+            # Fallback: copia real. Mismo contenido, ocupa disco aparte.
+            shutil.copy2(src_in_brand, target)
+    except Exception:
+        # "Todas las fotos" es nice-to-have: si por algun motivo falla
+        # (permisos, espacio, etc) seguimos sin tocar el flow principal.
+        pass
 
 
 def _copy_compressed(src, target, compress_mode):
