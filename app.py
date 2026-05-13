@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.8"
+APP_VERSION = "1.9"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -1704,7 +1704,14 @@ class App:
         Si no encuentra asset compatible (no deberia pasar — el workflow
         sube .exe + .app.zip a cada release), abre la pagina del release
         en el browser como fallback en vez de dejar al usuario stuck.
+
+        Guard: si ya hay un update en progreso ignoramos clicks adicionales
+        para no acumular bootstrappers.
         """
+        if getattr(self, "_update_in_progress", False):
+            return
+        self._update_in_progress = True
+
         import sys as _sys
         # Re-fetch — no confiar en self._update_info que puede estar
         # incompleto. fetch_release_with_assets siempre incluye "assets".
@@ -1735,6 +1742,7 @@ class App:
             )
             if should_open:
                 platform_utils.open_in_browser(url)
+            self._update_in_progress = False
             return
 
         # Modal overlay con progreso.
@@ -1807,6 +1815,7 @@ class App:
                     "No pude bajar el archivo. Verificá tu conexion e intentá de nuevo,\n"
                     "o usá 'Más tarde' para descargar manualmente.",
                 )
+                self._update_in_progress = False
                 return
             status.configure(text="Instalando y reiniciando…")
             # Lanzar bootstrapper. Si retorna True, salimos. Si retorna

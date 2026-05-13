@@ -360,18 +360,23 @@ rm -f "$0"
 
 
 def _install_windows(exe_path):
-    """Bootstrapper Windows con logging + retry. Lanza un .bat que:
-    1. Loguea cada paso a %TEMP%\\fotosproforma_update.log.
-    2. Unblock-File para sacar el zone identifier (Windows marca como
-       "bajado de internet" los archivos descargados, lo que puede
-       bloquear el reemplazo o disparar SmartScreen).
-    3. Espera 4 seg + reintenta el move /Y hasta 20 veces (1 seg c/u)
-       — si el proceso anterior todavia tiene handle al .exe el move
-       falla con error 32, hay que esperar.
-    4. Si despues de todos los reintentos falla, muestra dialogo al
-       usuario con el path del archivo descargado para reemplazo
-       manual.
-    5. Auto-borra el .bat al terminar.
+    """Bootstrapper Windows: PowerShell script (no .bat) que reemplaza el
+    .exe usando la estrategia "rename + move" en vez de "move directo".
+
+    Estrategia:
+    1. Espera 6 seg a que el proceso anterior termine.
+    2. Unblock-File para sacar zone identifier.
+    3. RENOMBRA el .exe actual a "<nombre>.old". El rename funciona en
+       muchos casos donde move/delete fallan (file handle de read-only,
+       Dropbox sync, etc).
+    4. MOVE del .exe nuevo a la posicion final (ahora vacia).
+    5. Intenta borrar el .old (best-effort; si Dropbox lo tiene lockeado,
+       queda en disco hasta el proximo reinicio — no es bloqueante).
+    6. Inicia la version nueva.
+    7. Si algo falla, dialogo al usuario con el path del archivo nuevo.
+
+    Todo el script corre con WindowStyle Hidden — sin ventana CMD visible.
+    Loguea cada paso a %TEMP%\\fotosproforma_update.log para diagnostico.
     """
     import sys
     import os
@@ -381,71 +386,129 @@ def _install_windows(exe_path):
 
     current_exe = _Path(sys.executable).resolve()
     new_exe = _Path(exe_path).resolve()
+    old_path = current_exe.with_name(current_exe.stem + ".old")
 
-    # Mensaje del diálogo si todo falla — escapamos comillas para PowerShell.
+    # Convertir Path a string Windows-friendly (con backslash).
+    # Para PowerShell hay que escapar las comillas simples duplicandolas.
+    def _esc(p):
+        return str(p).replace("'", "''")
+    cur_s = _esc(current_exe)
+    new_s = _esc(new_exe)
+    old_s = _esc(old_path)
+
     fail_msg = (
-        "No pude reemplazar el .exe automaticamente.\\n\\n"
-        f"El archivo nuevo quedo en:\\n{new_exe}\\n\\n"
-        "Cerrá Fotos Proforma y reemplazalo a mano por el .exe actual."
+        f"No pude reemplazar el .exe automaticamente.\n\n"
+        f"El archivo nuevo quedo en:\n{new_exe}\n\n"
+        "Cerra Fotos Proforma y reemplazalo a mano por el .exe actual."
     )
+    fail_msg_ps = fail_msg.replace("'", "''")
 
-    bat = f"""@echo off
-setlocal EnableExtensions
-set "LOG=%TEMP%\\fotosproforma_update.log"
+    ps = f"""$ErrorActionPreference = 'Continue'
+$log = "$env:TEMP\\fotosproforma_update.log"
+function Log($m) {{ Add-Content -LiteralPath $log -Value $m }}
 
-echo. >> "%LOG%"
-echo === %DATE% %TIME% === >> "%LOG%"
-echo PID a esperar: {os.getpid()} >> "%LOG%"
-echo Source (nuevo): {new_exe} >> "%LOG%"
-echo Target (actual): {current_exe} >> "%LOG%"
+Log ""
+Log "=== $(Get-Date) ==="
+Log "PID a esperar: {os.getpid()}"
+Log "Source (nuevo): {new_s}"
+Log "Target (actual): {cur_s}"
+Log "Backup temporal: {old_s}"
 
-REM Esperar a que el proceso anterior termine y libere el .exe.
-timeout /t 4 /nobreak >nul
+# 1. Esperar al proceso anterior — chequeo activo del PID.
+$pid_to_wait = {os.getpid()}
+for ($i = 0; $i -lt 60; $i++) {{
+    if (-not (Get-Process -Id $pid_to_wait -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 200
+}}
+Start-Sleep -Seconds 2  # margen extra por si el handle tarda en soltarse
 
-REM Sacar el zone identifier del archivo descargado (Windows marca
-REM archivos bajados de internet con un stream "ADS" que puede bloquear
-REM ejecucion o move). Unblock-File lo limpia.
-echo Limpiando zone identifier... >> "%LOG%"
-powershell -NoProfile -Command "Unblock-File -LiteralPath '{new_exe}'" >> "%LOG%" 2>&1
+# 2. Sacar zone identifier del archivo descargado.
+Log "Limpiando zone identifier..."
+Unblock-File -LiteralPath '{new_s}' -ErrorAction SilentlyContinue
 
-REM Intentar el move con retry. Si el .exe anterior todavia tiene
-REM handle abierto (puede pasar con --onefile que extrae a TEMP),
-REM hay que esperar y reintentar.
-set /a TRIES=0
-:retry
-set /a TRIES+=1
-move /Y "{new_exe}" "{current_exe}" >> "%LOG%" 2>&1
-if not errorlevel 1 goto success
-if %TRIES% LSS 20 (
-    echo Intento %TRIES% fallo, reintentando en 1s... >> "%LOG%"
-    timeout /t 1 /nobreak >nul
-    goto retry
-)
+# 3. Borrar cualquier .old viejo de un update anterior.
+if (Test-Path -LiteralPath '{old_s}') {{
+    Log "Eliminando .old viejo"
+    Remove-Item -LiteralPath '{old_s}' -Force -ErrorAction SilentlyContinue
+}}
 
-echo === FALLO el reemplazo despues de %TRIES% intentos === >> "%LOG%"
-REM Mostrar dialog al usuario para que sepa que pasa.
-powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{fail_msg}', 'Fotos Proforma - Update fallo', 'OK', 'Warning') | Out-Null"
-goto cleanup
+# 4. Renombrar el actual a .old. Estrategia "rename + move" funciona
+#    en casos donde el move directo falla (lock de read, Dropbox sync).
+$renamed = $false
+for ($i = 0; $i -lt 30; $i++) {{
+    try {{
+        Rename-Item -LiteralPath '{cur_s}' -NewName '{old_path.name}' -Force -ErrorAction Stop
+        $renamed = $true
+        Log "Rename OK en intento $($i+1)"
+        break
+    }} catch {{
+        if ($i -lt 29) {{
+            Log "Rename intento $($i+1) fallo: $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 500
+        }}
+    }}
+}}
 
-:success
-echo === Reemplazo OK en intento %TRIES% === >> "%LOG%"
-echo Iniciando nueva version... >> "%LOG%"
-start "" "{current_exe}"
+if (-not $renamed) {{
+    Log "FALLO rename despues de 30 intentos"
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show('{fail_msg_ps}', 'Fotos Proforma - Update fallo', 'OK', 'Warning') | Out-Null
+    exit 1
+}}
 
-:cleanup
-REM Auto-borrarse.
-del "%~f0"
+# 5. Mover el nuevo a la posicion del original.
+$moved = $false
+for ($i = 0; $i -lt 20; $i++) {{
+    try {{
+        Move-Item -LiteralPath '{new_s}' -Destination '{cur_s}' -Force -ErrorAction Stop
+        $moved = $true
+        Log "Move OK en intento $($i+1)"
+        break
+    }} catch {{
+        Log "Move intento $($i+1) fallo: $($_.Exception.Message)"
+        Start-Sleep -Milliseconds 500
+    }}
+}}
+
+if (-not $moved) {{
+    Log "FALLO move despues del rename — intentando revertir"
+    # Si rename funciono pero move fallo, revertir para que el usuario
+    # tenga al menos el .exe viejo de vuelta.
+    Rename-Item -LiteralPath '{old_s}' -NewName '{current_exe.name}' -Force -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show('{fail_msg_ps}', 'Fotos Proforma - Update fallo', 'OK', 'Warning') | Out-Null
+    exit 1
+}}
+
+# 6. Borrar el .old (best-effort, no critico si falla).
+Remove-Item -LiteralPath '{old_s}' -Force -ErrorAction SilentlyContinue
+Log "Reemplazo completado"
+
+# 7. Iniciar la version nueva.
+Log "Iniciando version nueva..."
+Start-Process -FilePath '{cur_s}'
+
+# 8. Auto-borrar este script.
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 """
-    fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="fotosproforma_update_")
-    with os.fdopen(fd, "w") as f:
-        f.write(bat)
 
-    # Lanzar el .bat detached (sin ventana de consola visible).
+    fd, ps_path = tempfile.mkstemp(suffix=".ps1", prefix="fotosproforma_update_")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(ps)
+
+    # Lanzar PowerShell hidden y desacoplado. -WindowStyle Hidden + Popen
+    # con DETACHED_PROCESS asegura que no aparezca ninguna ventana.
     CREATE_NEW_PROCESS_GROUP = 0x00000200
     DETACHED_PROCESS         = 0x00000008
     CREATE_NO_WINDOW         = 0x08000000
     subprocess.Popen(
-        ["cmd.exe", "/c", bat_path],
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-WindowStyle", "Hidden",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ps_path,
+        ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
         creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW,
