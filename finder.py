@@ -129,8 +129,12 @@ def _find_unique_prefix_match(dirpath, target_stem, recursive):
 def _find_by_color_any_variant(dirpath, prefix_num, color_upper, recursive):
     """Busca archivos que coinciden con {prefix_num}{cualquier_variante}{color}.
 
-    La variante puede ser 1 letra (caso comun: A, B, E, N) o 2-3 letras
-    (caso especial: INF, N, etc. para tallas de infantes/niños).
+    La variante puede ser:
+    - 0 letras: el archivo es directamente "{prefix_num}{color}.ext" sin
+      identificador de variante (caso de fotos cuyo nombre no incluye
+      A/B/E intermedio, ej. "SNM041OFFWHT.jpg").
+    - 1 letra (caso comun: A, B, E, N).
+    - 2-3 letras (caso especial: INF para infantes, etc.).
 
     Solo devuelve match si hay EXACTAMENTE UN archivo que coincida — sino
     es ambiguo (puede haber el mismo color en varias variantes) y
@@ -150,11 +154,12 @@ def _find_by_color_any_variant(dirpath, prefix_num, color_upper, recursive):
             continue
         rest = stem[len(prefix_upper):]
         # rest deberia ser {variante}{color}. Probamos varias longitudes
-        # de variante: 1 (A/B/E), 2 (no comun) o 3 (INF para infantes).
-        for variant_len in (1, 2, 3):
+        # de variante (0 a 3).
+        for variant_len in (0, 1, 2, 3):
             if len(rest) < variant_len + len(color_upper):
                 continue
-            if not rest[:variant_len].isalpha():
+            # Si hay variante, debe ser solo letras (no numeros / chars raros).
+            if variant_len > 0 and not rest[:variant_len].isalpha():
                 continue
             if rest[variant_len:] == color_upper:
                 matches.append(f)
