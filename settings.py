@@ -23,6 +23,10 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 DEFAULTS = {
     "modo": "complete",
     "no_ind": "missing",
+    # Compresion de fotos al copiar: "original" (sin comprimir, mejor calidad),
+    # "correo" (~1600px JPEG 85, calidad alta), "whatsapp" (~1100px JPEG 78,
+    # mas liviano para mandar muchas).
+    "compress_mode": "original",
     "dest_root": str(Path.home() / "Desktop" / "Fotos de Proformas"),
     # Geometria de la ventana del ultimo cierre, formato "WxH+X+Y". Vacio
     # significa "primer arranque, usar tamaño/posicion default y centrar".

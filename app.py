@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -345,6 +345,20 @@ MODOS = [
 NO_IND_OPCIONES = [
     ("missing", "Marcar faltante"),
     ("grupal",  "Usar la grupal"),
+]
+
+# Compresion al copiar fotos. "original" = sin compresion. Los otros dos
+# recomprimen con Pillow para que entren mas fotos en correos / WhatsApp.
+COMPRESS_OPCIONES = [
+    ("original", "Original",
+     "Sin comprimir. Mejor calidad, archivos grandes (varios MB c/u).",
+     None),
+    ("correo", "Optimizado para correo",
+     "Calidad alta y más liviano (~200 KB c/u). Para mandar por Gmail.",
+     None),
+    ("whatsapp", "Optimizado para WhatsApp",
+     "Aún más liviano (~100 KB c/u). Para mandar muchas fotos juntas.",
+     None),
 ]
 
 # Mapeo de id interno de formato a etiqueta human-readable. Se usa para mostrar
@@ -1168,6 +1182,7 @@ class App:
         self.results = []             # list[dict] - uno por PDF procesado
         self.modo_var = tk.StringVar(value=prefs.get("modo", "complete"))
         self.no_ind_var = tk.StringVar(value=prefs.get("no_ind", "missing"))
+        self.compress_var = tk.StringVar(value=prefs.get("compress_mode", "original"))
         self.dest_root_var = tk.StringVar(value=prefs.get("dest_root", str(DEFAULT_DEST_ROOT)))
         # Nombres editables de carpeta: dict path -> StringVar.
         # Cada PDF cargado tiene su propio StringVar con el cliente detectado
@@ -2893,6 +2908,15 @@ class App:
         except AttributeError:
             self.modo_var.trace("w", lambda *_: self._refresh_no_ind_visibility())
 
+        # ---- TAMAÑO DE LAS FOTOS ----
+        # Original / Correo / WhatsApp. Si elige Correo o WhatsApp, en la
+        # copia las fotos se recomprimen con Pillow.
+        self._section_label(body, "Tamaño de las fotos") \
+            .pack(anchor="w", pady=(SECTION_GAP, 10))
+        for rid, title, sub, _ in COMPRESS_OPCIONES:
+            OptionCard(body, self.compress_var, rid, title, sub) \
+                .pack(fill="x", pady=4)
+
         # ---- NOMBRE DE LA CARPETA ----
         # Single: un editor.
         # Batch: un editor por PDF (con el nombre del archivo arriba).
@@ -2953,12 +2977,14 @@ class App:
         # disco (ej VOX): marcar como faltante ("missing") o usar la
         # grupal como fallback ("grupal").
         use_grupal_no_ind = (self.no_ind_var.get() == "grupal")
+        compress_mode = self.compress_var.get() or "original"
         dest_root = self.dest_root_var.get()
 
-        # Persistir preferencias (no_ind queda por compat aunque ya no se usa).
+        # Persistir preferencias.
         user_settings.save({
             "modo": modo_id,
             "no_ind": self.no_ind_var.get(),
+            "compress_mode": compress_mode,
             "dest_root": dest_root,
         })
 
@@ -3057,6 +3083,7 @@ class App:
                         dest_folder_name=folder_name,
                         cancel_event=self.cancel_event,
                         parsed_override=entry["parsed"] if is_list else None,
+                        compress_mode=compress_mode,
                     )
                     self._batch_results.append(res)
                 except Exception as e:

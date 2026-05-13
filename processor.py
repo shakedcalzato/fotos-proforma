@@ -167,7 +167,16 @@ def _format_copy_error(exc, src, target):
     return f"Error al copiar: {exc}"
 
 
-def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
+# Presets de compresion para envio (max_dimension_px, jpeg_quality).
+# El modo "original" no esta en el dict — significa "no comprimir, copy raw".
+_COMPRESS_PRESETS = {
+    "correo":   (1600, 85),   # Calidad alta, ~150-300 KB por foto.
+    "whatsapp": (1100, 78),   # Mas liviano, ~80-150 KB por foto.
+}
+
+
+def _copy_to_dest(src, dest, missing, item, brand_subfolder=None,
+                  compress_mode="original"):
     """Copia src -> dest/[brand_subfolder]/<nombre>, evitando colisiones
     con sufijo numérico. Si falla la copia, registra en missing y devuelve
     False. Devuelve True si copió.
@@ -175,6 +184,12 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
     Si `brand_subfolder` se especifica, las fotos van a una subcarpeta
     con ese nombre (típicamente la marca: GOSSIP, B'LINDA, etc.). Si es
     None, van al root del dest.
+
+    Si `compress_mode` esta en _COMPRESS_PRESETS (ej. "correo", "whatsapp"),
+    en vez de copiar raw se recomprime con Pillow: resize del lado mayor
+    a max_dimension manteniendo aspect ratio + reencoding JPEG con quality.
+    Si Pillow no esta o el archivo no se puede procesar (formato raro),
+    cae a copia raw silenciosamente.
 
     GUARD: rechaza la operación si `dest` cae adentro de la carpeta de
     Dropbox. Blinda la regla de oro: NUNCA escribimos en Dropbox.
@@ -202,7 +217,14 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
     else:
         target_dir = dest
 
-    target = target_dir / src.name
+    # Si comprimimos, la extension destino siempre es .jpg (recomprimimos a JPEG).
+    use_compress = (compress_mode in _COMPRESS_PRESETS)
+    if use_compress:
+        target_name = src.stem + ".jpg"
+    else:
+        target_name = src.name
+
+    target = target_dir / target_name
     if target.exists():
         stem, ext = target.stem, target.suffix
         i = 2
@@ -213,7 +235,14 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
                 break
             i += 1
     try:
-        shutil.copy2(src, target)
+        if use_compress:
+            ok = _copy_compressed(src, target, compress_mode)
+            if not ok:
+                # Fallback: copiar raw conservando el formato original.
+                target = target.with_suffix(src.suffix)
+                shutil.copy2(src, target)
+        else:
+            shutil.copy2(src, target)
         return True
     except OSError as e:
         if item is not None:
@@ -224,10 +253,45 @@ def _copy_to_dest(src, dest, missing, item, brand_subfolder=None):
         return False
 
 
+def _copy_compressed(src, target, compress_mode):
+    """Recomprime src y la guarda como JPEG en target. Devuelve True si OK,
+    False si fallo (en cuyo caso el caller hace fallback a copia raw)."""
+    preset = _COMPRESS_PRESETS.get(compress_mode)
+    if not preset:
+        return False
+    max_dim, quality = preset
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return False
+    try:
+        with Image.open(src) as img:
+            # ImageOps.exif_transpose respeta la orientacion EXIF (rotacion)
+            # — sino fotos verticales pueden quedar horizontales al guardar.
+            img = ImageOps.exif_transpose(img)
+            # Resize manteniendo aspect ratio si supera max_dim en algun lado.
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+            # JPEG no soporta canales alpha → fondo blanco para PNG/transparentes.
+            if img.mode in ("RGBA", "LA"):
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                alpha = img.split()[-1]
+                bg.paste(img, mask=alpha)
+                img = bg
+            elif img.mode == "P":
+                img = img.convert("RGB")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(target, "JPEG", quality=quality, optimize=True, progressive=True)
+        return True
+    except Exception:
+        return False
+
+
 def process(pdf_path, modo, on_progress=None,
             use_grupal_when_no_individuals=False,
             dest_root=None, dest_folder_name=None,
-            cancel_event=None, parsed_override=None):
+            cancel_event=None, parsed_override=None,
+            compress_mode="original"):
     """Procesa una proforma de inicio a fin.
 
     Args:
@@ -346,11 +410,13 @@ def process(pdf_path, modo, on_progress=None,
             valid_items, year, dbx, dest, progress, missing,
             use_grupal_when_no_individuals=use_grupal_when_no_individuals,
             cancel_event=cancel_event,
+            compress_mode=compress_mode,
         )
     else:
         copied_count, copied_per_brand = _run_simple(
             valid_items, modo, year, dbx, dest, progress, missing,
             cancel_event=cancel_event,
+            compress_mode=compress_mode,
         )
 
     cancelled = bool(cancel_event is not None and cancel_event.is_set())
@@ -441,7 +507,7 @@ def _find_refs_without_individuals(valid_items, year, dbx):
 # =============================================================================
 
 def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
-                cancel_event=None):
+                cancel_event=None, compress_mode="original"):
     """MODE_GRUPAL y MODE_INDIVIDUAL.
 
     - GRUPAL: dedup por (prefix, number), buscar grupal de cada referencia.
@@ -489,7 +555,9 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
                 "brand": brand,
             })
             continue
-        if _copy_to_dest(src, dest, missing, item, brand_subfolder=brand):
+        if _copy_to_dest(src, dest, missing, item,
+                         brand_subfolder=brand,
+                         compress_mode=compress_mode):
             copied += 1
             copied_per_brand[brand] += 1
     return copied, copied_per_brand
@@ -530,7 +598,7 @@ def _all_existing_covered(existing, ordered):
 
 def _run_complete(valid_items, year, dbx, dest, progress, missing,
                   use_grupal_when_no_individuals=False,
-                  cancel_event=None):
+                  cancel_event=None, compress_mode="original"):
     """MODE_COMPLETE: por cada referencia base, decidir grupal vs individuales.
 
     Regla: si la proforma pidio TODOS los colores que existen en disco para
@@ -600,7 +668,9 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
 
         if is_complete and grupal_src:
             # Pediste todos los colores que tenemos: mandamos solo la grupal.
-            if _copy_to_dest(grupal_src, dest, missing, None, brand_subfolder=brand):
+            if _copy_to_dest(grupal_src, dest, missing, None,
+                             brand_subfolder=brand,
+                             compress_mode=compress_mode):
                 copied += 1
                 copied_per_brand[brand] += 1
         else:
@@ -627,7 +697,9 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                         "brand": brand,
                     })
                     continue
-                if _copy_to_dest(src, dest, missing, item, brand_subfolder=brand):
+                if _copy_to_dest(src, dest, missing, item,
+                                 brand_subfolder=brand,
+                                 compress_mode=compress_mode):
                     copied += 1
                     copied_per_brand[brand] += 1
                     mandated_individuals = True
