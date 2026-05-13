@@ -126,6 +126,44 @@ def _find_unique_prefix_match(dirpath, target_stem, recursive):
     return matches[0] if matches else None
 
 
+def _find_by_color_any_variant(dirpath, prefix_num, color_upper, recursive):
+    """Busca archivos que coinciden con {prefix_num}{cualquier_variante}{color}.
+
+    La variante puede ser 1 letra (caso comun: A, B, E, N) o 2-3 letras
+    (caso especial: INF, N, etc. para tallas de infantes/niños).
+
+    Solo devuelve match si hay EXACTAMENTE UN archivo que coincida — sino
+    es ambiguo (puede haber el mismo color en varias variantes) y
+    preferimos no decidir nosotros que elegir mal.
+
+    Args:
+        dirpath:     directorio donde buscar (carpeta de marca).
+        prefix_num:  "{PREFIX}{NUMBER}" (ej "SNH210"). Case-sensitive.
+        color_upper: color esperado en uppercase (ej "NVYBLK").
+        recursive:   si bajar a subcarpetas.
+    """
+    prefix_upper = prefix_num.upper()
+    matches = []
+    for f in _iter_image_files(dirpath, recursive):
+        stem = f.stem.upper()
+        if not stem.startswith(prefix_upper):
+            continue
+        rest = stem[len(prefix_upper):]
+        # rest deberia ser {variante}{color}. Probamos varias longitudes
+        # de variante: 1 (A/B/E), 2 (no comun) o 3 (INF para infantes).
+        for variant_len in (1, 2, 3):
+            if len(rest) < variant_len + len(color_upper):
+                continue
+            if not rest[:variant_len].isalpha():
+                continue
+            if rest[variant_len:] == color_upper:
+                matches.append(f)
+                break  # match encontrado para este archivo
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _iter_image_files(dirpath, recursive):
     """Itera archivos de imagen del directorio."""
     if not dirpath.is_dir():
@@ -228,6 +266,25 @@ def find_individual(parsed, year, dropbox_root, raw=None, suspect=False):
             if brand_dir is None:
                 continue
             result = _find_unique_prefix_match(brand_dir, target, recursive=True)
+            if result:
+                return result
+
+    # Pasada 2.5: match por COLOR EXACTO ignorando la variante. Util cuando
+    # el PDF dice /A/COLOR pero la foto en Dropbox tiene otra variante
+    # (ej SNH210ENVYBLK con variante E porque ese color solo existe en
+    # esa talla). Solo retornamos si hay UN solo archivo que matchee,
+    # sino es ambiguo y dejamos que pasada 3 (fuzzy) o el reporte de
+    # faltantes resuelva.
+    prefix_num = f"{parsed['prefix']}{parsed['number']}"
+    color_upper = parsed["color"].upper()
+    if len(color_upper) >= 2:
+        for year_dir in years:
+            brand_dir = _resolve_brand_dir(year_dir, parsed["brand"])
+            if brand_dir is None:
+                continue
+            result = _find_by_color_any_variant(
+                brand_dir, prefix_num, color_upper, recursive=True,
+            )
             if result:
                 return result
 
