@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.12"
+APP_VERSION = "1.13"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -1150,7 +1150,7 @@ class App:
         # la ventana durante todo el setup; deiconify() al final la muestra
         # con el tamaño correcto ya aplicado.
         self.root.withdraw()
-        self.root.title("Fotos Proforma")
+        self.root.title(f"Fotos Proforma · v{APP_VERSION}")
         # Ventana redimensionable como cualquier app moderna. El usuario puede
         # agarrar las esquinas y agrandarla; el contenido se adapta gracias a
         # pack(fill=...) y a los wraplengths dinamicos (_bind_dynamic_wraplength).
