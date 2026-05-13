@@ -209,9 +209,21 @@ def _parse_product_line(line, table_layout="ctns"):
     if end_pos < len(line) and line[end_pos].islower():
         code = code[:-1]
 
-    # Normalizar SURTID -> SURTIDO. A veces el color queda truncado visualmente.
-    if code.endswith("/SURTID"):
-        code = code + "O"
+    # Normalizar el sufijo SURTID*. Casos reales encontrados:
+    #   /SURTID      → /SURTIDO        (truncado, agregamos O)
+    #   /SURTIDO     → /SURTIDO        (caso normal, no toca)
+    #   /SURTIDZ     → /SURTIDO        (letra Z de "Zapatillas" pegada,
+    #                                   pero faltaba la O — extraccion
+    #                                   recorto la O)
+    #   /SURTIDOZ    → /SURTIDO        (la O legitima + Z de descripcion
+    #                                   sin espacio entre ellas)
+    #   /SURTIDOS    → /SURTIDO        (idem con S de "Sandalias", etc.)
+    # La regla: si el color despues de la 2da barra empieza con "SURTID",
+    # forzamos a "SURTIDO" porque SURTIDO es el unico valor valido para
+    # ese color en el catalogo.
+    if "/SURTID" in code:
+        head = code.rsplit("/", 1)[0]   # ej "GSM806/A"
+        code = head + "/SURTIDO"
 
     # Validar que el código resultante sea sano (exactamente 2 barras).
     if code.count("/") != 2:
