@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -1679,20 +1679,47 @@ class App:
 
     def _perform_update(self):
         """Flujo "Actualizar ahora" cuando estamos en .app/.exe empaquetado:
+        - Re-fetch del release info para garantizar assets actuales.
         - Identifica el asset apropiado en el release.
         - Muestra modal con barra de progreso.
         - Descarga en thread daemon.
         - Lanza el bootstrapper (script externo) que reemplaza el binario.
         - Sale de la app — el bootstrapper espera 2s y abre la version nueva.
+
+        Si no encuentra asset compatible (no deberia pasar — el workflow
+        sube .exe + .app.zip a cada release), abre la pagina del release
+        en el browser como fallback en vez de dejar al usuario stuck.
         """
-        info = self._update_info or {}
+        import sys as _sys
+        # Re-fetch — no confiar en self._update_info que puede estar
+        # incompleto. fetch_release_with_assets siempre incluye "assets".
+        info = updater.fetch_release_with_assets() or self._update_info or {}
         asset = updater.asset_for_current_platform(info)
-        if not asset:
-            messagebox.showerror(
-                "No hay version compatible",
-                "El release no tiene un binario para este sistema.\n\n"
-                "Probá descargarlo a mano con el botón 'Ver release'.",
+
+        # Logging defensivo para diagnostico futuro.
+        try:
+            _log_event(
+                f"Update click: platform={_sys.platform!r}, "
+                f"tag={info.get('tag_name')!r}, "
+                f"assets={[a.get('name') for a in (info.get('assets') or [])]}, "
+                f"matched={asset.get('name') if asset else None}"
             )
+        except Exception:
+            pass
+
+        if not asset:
+            # Fallback: abrir la URL del release en el browser para que el
+            # usuario pueda descargar manualmente. Mensaje claro de que
+            # paso, sin dejarlo trabado.
+            url = info.get("html_url") or \
+                  f"https://github.com/{updater.GITHUB_OWNER}/{updater.GITHUB_REPO}/releases/latest"
+            should_open = messagebox.askyesno(
+                "Actualizacion automatica no disponible",
+                "No pude encontrar un binario compatible para tu sistema en el release.\n\n"
+                "¿Querés abrir la página del release en tu navegador para bajarlo a mano?",
+            )
+            if should_open:
+                platform_utils.open_in_browser(url)
             return
 
         # Modal overlay con progreso.
