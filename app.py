@@ -3637,13 +3637,15 @@ class App:
 
         # Status detallado: el processor emite mensajes como
         # "[1/3] file.pdf · BRAND · SKU". Separamos la parte BRAND · SKU
-        # (detalle visual del SKU actual) del prefijo del batch para que el
-        # usuario vea exactamente que se esta procesando en cada momento.
+        # (detalle visual del SKU actual = el chip) del prefijo del batch
+        # (= mensaje secundario chico debajo del chip).
         status_text, detail_text = _split_status_detail(msg)
+        # En v2.0 el detalle va al chip dinamico; el status_text (contexto
+        # del batch) va al label chico de abajo.
+        if hasattr(self, "_build_processing_chip"):
+            self._build_processing_chip(detail_text or status_text or "Iniciando…")
         if self.s3_msg_label and self.s3_msg_label.winfo_exists():
             self.s3_msg_label.configure(text=status_text)
-        if hasattr(self, "s3_detail_label") and self.s3_detail_label and self.s3_detail_label.winfo_exists():
-            self.s3_detail_label.configure(text=detail_text)
         # Guardamos el ratio para poder redibujar la barra cuando la ventana
         # se redimensiona (ver _redraw_progress_bar).
         ratio = (current / total) if total else 0
@@ -3671,56 +3673,55 @@ class App:
         )
 
         body = tk.Frame(self.container, bg=BG)
-        body.pack(fill="both", expand=True, padx=SCREEN_PADX, pady=20)
+        body.pack(fill="both", expand=True, padx=SCREEN_PADX, pady=(0, 20))
 
+        # ===== CARD PRINCIPAL DE PROGRESO (v2.0) =====
         card = Card(body)
         card.pack(fill="x")
         inner = tk.Frame(card, bg=SURFACE)
         inner.pack(padx=28, pady=32, fill="x")
 
-        top_row = tk.Frame(inner, bg=SURFACE)
-        top_row.pack(fill="x")
+        # "45%" gigante centrado horizontalmente.
         self.s3_pct_label = tk.Label(
-            top_row, text="0%", font=FONT_DISPLAY, bg=SURFACE, fg=TEXT,
+            inner, text="0%", font=F(56, "bold"),
+            bg=SURFACE, fg=ACCENT,
         )
-        self.s3_pct_label.pack(side="left")
+        self.s3_pct_label.pack()
+
+        # "12 de 142" chiquito debajo del porcentaje.
         self.s3_count_label = tk.Label(
-            top_row, text="0 de 0", font=FONT_BODY,
+            inner, text="0 de 0", font=FONT_BODY,
             bg=SURFACE, fg=TEXT_MUTED,
         )
-        self.s3_count_label.pack(side="right")
+        self.s3_count_label.pack(pady=(4, 16))
 
+        # Barra de progreso ancho completo.
         self.s3_canvas = tk.Canvas(
             inner, height=6, bg=BG, highlightthickness=0,
         )
-        self.s3_canvas.pack(fill="x", pady=(14, 12))
+        self.s3_canvas.pack(fill="x", pady=(0, 20))
         self.s3_bar = self.s3_canvas.create_rectangle(
             0, 0, 0, 6, fill=ACCENT, width=0,
         )
-        # Redibujar la barra cuando el canvas cambia de ancho (resize de ventana)
-        # — mantiene el porcentaje proporcional al nuevo ancho.
         self.s3_canvas.bind("<Configure>", lambda e: self._redraw_progress_bar())
 
+        # Chip con el SKU actual (centrado).
+        self.s3_chip_holder = tk.Frame(inner, bg=SURFACE)
+        self.s3_chip_holder.pack(pady=(0, 4))
+        self._build_processing_chip("Iniciando…")
+
+        # Status secundario (contexto del batch, ej "[1/3] file.pdf").
         self.s3_msg_label = tk.Label(
-            inner, text="Iniciando…", font=FONT_CAPTION,
-            bg=SURFACE, fg=TEXT_MUTED, anchor="w",
-            wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
+            inner, text="", font=FONT_CAPTION,
+            bg=SURFACE, fg=TEXT_LIGHT,
         )
-        self.s3_msg_label.pack(anchor="w", fill="x", pady=(0, 4))
-        _bind_dynamic_wraplength(self.s3_msg_label, margin=8)
+        self.s3_msg_label.pack(pady=(2, 0))
+        # Compat: en flow legado, _update_progress escribia el detalle del
+        # SKU en s3_detail_label. Ahora lo escribimos al chip directamente.
+        # Mantengo el atributo como alias del chip para no romper el flow.
+        self.s3_detail_label = self.s3_msg_label  # placeholder safe
 
-        # Mensaje secundario: detalle del SKU actual. El processor emite
-        # "{brand} · {sku}" en cada paso — lo separamos del estado general
-        # para que el usuario vea exactamente que se esta buscando ahora.
-        self.s3_detail_label = tk.Label(
-            inner, text="", font=FONT_BODY_BOLD,
-            bg=SURFACE, fg=TEXT, anchor="w",
-        )
-        self.s3_detail_label.pack(anchor="w", fill="x")
-        _bind_dynamic_wraplength(self.s3_detail_label, margin=8)
-
-        # Botón Cancelar abajo de la card (alineado a la derecha del body).
-        # Setea el cancel_event que el processor revisa entre SKUs.
+        # Botón Cancelar abajo de la card (alineado a la derecha).
         cancel_row = tk.Frame(body, bg=BG)
         cancel_row.pack(fill="x", pady=(SECTION_GAP, 0))
         self.s3_cancel_btn = CanvasButton(
@@ -3728,6 +3729,66 @@ class App:
             command=self._on_cancel_processing, kind="secondary",
         )
         self.s3_cancel_btn.pack(side="right")
+
+        # ===== 3 CARDS DE INFO ABAJO =====
+        info_grid = tk.Frame(body, bg=BG)
+        info_grid.pack(fill="x", pady=(SECTION_GAP, 0))
+        info_grid.grid_columnconfigure(0, weight=1, uniform="info3")
+        info_grid.grid_columnconfigure(1, weight=1, uniform="info3")
+        info_grid.grid_columnconfigure(2, weight=1, uniform="info3")
+
+        # Resolver labels segun el estado de la app.
+        dbx_status = "Conectado" if (
+            self.dropbox_status and self.dropbox_status.get("connected")
+        ) else "Sin conexión"
+        # Tiempo restante: por ahora estatico "Procesando" (calcular ETA
+        # requiere medir tiempo por SKU — lo dejamos para futuro).
+        eta = "Procesando…"
+        # Destino: nombre de la carpeta del primer resultado, si lo hay,
+        # o el override del usuario.
+        dest_short = "Carpeta destino"
+        if self.parsed_data_list:
+            entry = next((e for e in self.parsed_data_list if "parsed" in e), None)
+            if entry:
+                var = self.client_override_vars.get(entry["path"])
+                if var and var.get():
+                    dest_short = var.get()
+                elif entry.get("parsed", {}).get("client"):
+                    dest_short = entry["parsed"]["client"]
+
+        for col, (icon, label, value) in enumerate([
+            ("☁️", "ORIGEN", f"Dropbox · {dbx_status}"),
+            ("⏱", "TIEMPO RESTANTE", eta),
+            ("✓",  "DESTINO", dest_short),
+        ]):
+            info_card = Card(info_grid)
+            info_card.grid(
+                row=0, column=col, sticky="nsew",
+                padx=(0 if col == 0 else 6, 0 if col == 2 else 6),
+            )
+            inn = tk.Frame(info_card, bg=SURFACE)
+            inn.pack(padx=16, pady=14, fill="both", expand=True)
+            tk.Label(
+                inn, text=f"{icon}  {label}",
+                font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            ).pack(anchor="w", pady=(0, 4))
+            tk.Label(
+                inn, text=value,
+                font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+                wraplength=200, justify="left",
+            ).pack(anchor="w", fill="x")
+
+    def _build_processing_chip(self, text):
+        """Pinta el chip con el SKU actual en el holder. Limpiamos el
+        contenido previo (asi se actualiza dinamicamente desde
+        _update_progress)."""
+        holder = getattr(self, "s3_chip_holder", None)
+        if holder is None or not holder.winfo_exists():
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        Chip(holder, f"🔄  {text}" if text else "🔄  Iniciando…",
+             kind="primary", parent_bg=SURFACE).pack()
 
     def _on_cancel_processing(self):
         """Setea el cancel_event para que el processor pare entre SKUs.
