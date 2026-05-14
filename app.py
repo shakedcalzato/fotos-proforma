@@ -156,25 +156,29 @@ def _split_status_detail(msg):
 # mientras la app esta abierta, no se refleja hasta reiniciar.
 
 _PALETTE_LIGHT = {
-    "BG":              "#F5F5F7",
-    "SURFACE":         "#FFFFFF",
-    "TEXT":            "#1D1D1F",
-    "TEXT_MUTED":      "#6E6E73",
-    "TEXT_LIGHT":      "#86868B",
-    "ACCENT":          "#0066CC",
-    "ACCENT_HOVER":    "#0058B5",
-    "ACCENT_TINT":     "#E8F1FC",
-    "BORDER":          "#D2D2D7",
-    "BORDER_SUBTLE":   "#E5E5EA",
-    "BORDER_STRONG":   "#A8A8AC",
-    "SHADOW":          "#E0E0E5",
-    "DISABLED_BG":     "#E5E5EA",
-    "DISABLED_FG":     "#A8A8AC",
+    # Paleta v2.0 — alineada con el rediseño de Stitch ("Precision Desktop").
+    # Tonal layering: BG es el lienzo, SURFACE las cards, distintos grises
+    # de borders y textos siguen una jerarquia clara.
+    "BG":              "#F5F5F7",   # canvas / sidebars
+    "SURFACE":         "#FFFFFF",   # cards / superficies principales
+    "TEXT":            "#191C22",   # on-surface principal
+    "TEXT_MUTED":      "#414753",   # on-surface-variant (mas oscuro que antes)
+    "TEXT_LIGHT":      "#727784",   # outline / labels secundarios
+    "ACCENT":          "#0066CC",   # primary blue
+    "ACCENT_HOVER":    "#004E9F",   # primary darkened
+    "ACCENT_TINT":     "#DFE8FF",   # primary-container (azul claro pastel)
+    "BORDER":          "#C1C6D5",   # outline-variant fuerte
+    "BORDER_SUBTLE":   "#E5E5E7",   # 1px border para cards (default)
+    "BORDER_STRONG":   "#727784",   # borde fuerte (estados hover, focus)
+    "SHADOW":          "#E1E2EB",   # tonal layer abajo de cards
+    "DISABLED_BG":     "#ECEDF6",
+    "DISABLED_FG":     "#A8ADBA",
     "SUCCESS":         "#30A46C",
-    "ERROR":           "#E5484D",
-    "TOAST_BG":        "#1D1D1F",
+    "ERROR":           "#BA1A1A",
+    "TOAST_BG":        "#191C22",
     "TOAST_FG":        "#FFFFFF",
-    "HOVER_BG":        "#EDEDED",   # hover sutil para botones secondary
+    "HOVER_BG":        "#F2F3FC",   # surface-container-low (hover sutil)
+    "GOLD":            "#D4AF37",   # acento de marca, uso sutil
 }
 
 _PALETTE_DARK = {
@@ -197,6 +201,7 @@ _PALETTE_DARK = {
     "TOAST_BG":        "#F2F2F7",   # invertido: toast claro en dark mode
     "TOAST_FG":        "#1D1D1F",
     "HOVER_BG":        "#3A3A3C",
+    "GOLD":            "#E9C349",   # acento gold mas claro para dark mode
 }
 
 
@@ -243,7 +248,7 @@ def _apply_palette_globals(dark):
     global ACCENT, ACCENT_HOVER, ACCENT_TINT
     global BORDER, BORDER_SUBTLE, BORDER_STRONG, SHADOW
     global DISABLED_BG, DISABLED_FG, SUCCESS, ERROR
-    global TOAST_BG, TOAST_FG, HOVER_BG
+    global TOAST_BG, TOAST_FG, HOVER_BG, GOLD
     _PALETTE = _PALETTE_DARK if dark else _PALETTE_LIGHT
     DARK_MODE = dark
     BG              = _PALETTE["BG"]
@@ -265,6 +270,7 @@ def _apply_palette_globals(dark):
     TOAST_BG        = _PALETTE["TOAST_BG"]
     TOAST_FG        = _PALETTE["TOAST_FG"]
     HOVER_BG        = _PALETTE["HOVER_BG"]
+    GOLD            = _PALETTE.get("GOLD", "#D4AF37")
 
 
 # Forward declarations: las constantes se asignan abajo en
@@ -276,7 +282,7 @@ BG = SURFACE = TEXT = TEXT_MUTED = TEXT_LIGHT = ""
 ACCENT = ACCENT_HOVER = ACCENT_TINT = ""
 BORDER = BORDER_SUBTLE = BORDER_STRONG = SHADOW = ""
 DISABLED_BG = DISABLED_FG = SUCCESS = ERROR = ""
-TOAST_BG = TOAST_FG = HOVER_BG = ""
+TOAST_BG = TOAST_FG = HOVER_BG = GOLD = ""
 _apply_palette_globals(_detect_dark_mode())
 
 
@@ -1000,6 +1006,131 @@ class SegmentedControl(tk.Frame):
 # Toast - notificacion no-intrusiva abajo centrada
 # =============================================================================
 
+class TopNavBar(tk.Frame):
+    """Barra de navegacion horizontal arriba de la app (v2.0).
+
+    Tres tabs (Cargar / Configurar / Resultado) que reflejan el paso
+    actual del flujo. El tab activo tiene underline azul; los otros
+    quedan en gris. Click en un tab anterior al actual permite saltar
+    atras (los tabs delante del actual estan deshabilitados — no se
+    puede saltar adelante sin completar pasos).
+
+    Estructura:
+        [logo]                    [tab1] [tab2] [tab3]              [help] [?]
+    """
+
+    # tab_id → label visible
+    TABS = [
+        ("cargar",     "Cargar"),
+        ("configurar", "Configurar"),
+        ("resultado",  "Resultado"),
+    ]
+    # Mapeo entre screen actual de App (1, 2, "processing", "result") y tab_id.
+    SCREEN_TO_TAB = {
+        1:            "cargar",
+        2:            "configurar",
+        "processing": "resultado",
+        "result":     "resultado",
+        None:         "cargar",
+    }
+    # Orden numerico de los tabs para decidir cuales son "atras" (clickeables)
+    # y cuales son "adelante" (deshabilitados).
+    TAB_ORDER = {tid: i for i, (tid, _) in enumerate(TABS)}
+
+    def __init__(self, parent, on_tab_click=None):
+        super().__init__(parent, bg=SURFACE, height=56,
+                         highlightthickness=0, bd=0)
+        self.pack_propagate(False)
+        self.on_tab_click = on_tab_click
+        self._tab_widgets = {}      # tab_id → (frame, label, underline)
+        self._active_tab = "cargar"
+
+        # Border bottom hairline 1px.
+        bottom_border = tk.Frame(self, bg=BORDER_SUBTLE, height=1)
+        bottom_border.pack(side="bottom", fill="x")
+
+        # ----- Logo izquierda -----
+        left = tk.Frame(self, bg=SURFACE)
+        left.pack(side="left", padx=20)
+        tk.Label(
+            left, text="📁", font=F(18),
+            bg=SURFACE, fg=ACCENT,
+        ).pack(side="left", padx=(0, 8))
+        tk.Label(
+            left, text="Fotos Proforma", font=F(16, "bold"),
+            bg=SURFACE, fg=TEXT,
+        ).pack(side="left")
+
+        # ----- Iconos derecha -----
+        right = tk.Frame(self, bg=SURFACE)
+        right.pack(side="right", padx=20)
+        for icon in ("？",):  # solo help por ahora
+            lbl = tk.Label(
+                right, text=icon, font=F(14),
+                bg=SURFACE, fg=TEXT_LIGHT, padx=8,
+            )
+            lbl.pack(side="left")
+
+        # ----- Tabs centro -----
+        center = tk.Frame(self, bg=SURFACE)
+        center.pack(side="left", expand=True)
+        for tab_id, label in self.TABS:
+            tab_frame = tk.Frame(center, bg=SURFACE)
+            tab_frame.pack(side="left", padx=14, pady=0, fill="y")
+            tab_label = tk.Label(
+                tab_frame, text=label, font=F(14, "normal"),
+                bg=SURFACE, fg=TEXT_MUTED,
+            )
+            tab_label.pack(side="top", pady=(18, 0))
+            # Underline: Frame de 2px que aparece/desaparece segun activo.
+            underline = tk.Frame(tab_frame, bg=ACCENT, height=2)
+            underline.pack(side="top", fill="x", pady=(16, 0))
+            underline.pack_forget()  # oculto por default
+
+            self._tab_widgets[tab_id] = (tab_frame, tab_label, underline)
+            # Click handler para los tabs "atras" del actual.
+            for w in (tab_frame, tab_label):
+                w.bind("<Button-1>", lambda _e, tid=tab_id: self._on_click(tid))
+
+        self.set_active("cargar")
+
+    def _on_click(self, tab_id):
+        """Click en un tab. Solo permite ir HACIA ATRAS del tab actual.
+        Para ir adelante hay que usar el flujo normal (Continuar)."""
+        if self.on_tab_click is None:
+            return
+        cur_idx = self.TAB_ORDER.get(self._active_tab, 0)
+        new_idx = self.TAB_ORDER.get(tab_id, 0)
+        if new_idx <= cur_idx:
+            self.on_tab_click(tab_id)
+
+    def set_active(self, tab_id):
+        """Marca un tab como activo (underline azul). Los tabs anteriores
+        quedan clickeables en gris medio, los posteriores en gris claro
+        (deshabilitados visualmente)."""
+        if tab_id not in self._tab_widgets:
+            return
+        self._active_tab = tab_id
+        active_idx = self.TAB_ORDER[tab_id]
+        for tid, (frame, label, underline) in self._tab_widgets.items():
+            idx = self.TAB_ORDER[tid]
+            if tid == tab_id:
+                label.configure(fg=ACCENT, font=F(14, "bold"))
+                underline.pack(side="top", fill="x", pady=(16, 0))
+            elif idx < active_idx:
+                label.configure(fg=TEXT_MUTED, font=F(14, "normal"))
+                underline.pack_forget()
+            else:
+                label.configure(fg=TEXT_LIGHT, font=F(14, "normal"))
+                underline.pack_forget()
+
+    def set_active_for_screen(self, screen):
+        """Helper: recibe el self._current_screen de App (1, 2, "processing",
+        "result", None) y setea el tab apropiado."""
+        tab_id = self.SCREEN_TO_TAB.get(screen, "cargar")
+        self.set_active(tab_id)
+
+
 class Toast:
     """Aviso temporal que aparece abajo centrado y se va solo. Reemplaza a
     messagebox.showinfo para casos donde el usuario no necesita confirmar
@@ -1217,7 +1348,13 @@ class App:
         # como default. El usuario puede sobreescribir cada uno en pantalla 2.
         self.client_override_vars = {}
 
-        # Container
+        # Top nav bar (v2.0): tabs persistentes "Cargar / Configurar /
+        # Resultado" indican el paso actual del flujo. Click en un tab
+        # anterior al actual permite saltar atras.
+        self.topnav = TopNavBar(self.root, on_tab_click=self._on_topnav_click)
+        self.topnav.pack(side="top", fill="x")
+
+        # Container principal (debajo del top nav).
         self.container = tk.Frame(self.root, bg=BG)
         self.container.pack(fill="both", expand=True)
 
@@ -1618,6 +1755,20 @@ class App:
             "reporte. ¿Procesar igual?"
         )
         return messagebox.askyesno(title, body, default="yes")
+
+    # ---- Top nav bar handlers ---------------------------------------------
+
+    def _on_topnav_click(self, tab_id):
+        """Click en un tab del top nav: solo navega hacia atras del paso
+        actual (los tabs hacia adelante no son clickeables — hay que
+        completar el flujo)."""
+        if tab_id == "cargar":
+            self._goto(self.show_screen1)
+        elif tab_id == "configurar":
+            # Solo si ya hay PDFs cargados.
+            if any("parsed" in e for e in self.parsed_data_list):
+                self._goto(self.show_screen2)
+        # "resultado" no es clickeable hacia adelante.
 
     # ---- Auto-install local (cuando corre desde Dropbox/OneDrive) -----------
 
@@ -2383,6 +2534,8 @@ class App:
     def show_screen1(self):
         self._clear()
         self._current_screen = 1
+        if hasattr(self, "topnav"):
+            self.topnav.set_active_for_screen(1)
         # El banner de update vive como child del container; _clear() lo
         # destruyo, asi que lo nullificamos. Despues del header lo re-creamos
         # si todavia hay update pendiente y el usuario no lo descarto.
@@ -3032,6 +3185,8 @@ class App:
     def show_screen2(self):
         self._clear()
         self._current_screen = 2
+        if hasattr(self, "topnav"):
+            self.topnav.set_active_for_screen(2)
         n = len(self.pdf_paths)
         if n == 1:
             subtitle = f"PDF: {_display_name_for_path(self.pdf_paths[0])}"
@@ -3389,6 +3544,8 @@ class App:
     def show_screen3_processing(self):
         self._clear()
         self._current_screen = "processing"
+        if hasattr(self, "topnav"):
+            self.topnav.set_active_for_screen("processing")
         self._header(
             "Procesando",
             "Buscando fotos en Dropbox y copiando al escritorio.",
@@ -3477,6 +3634,8 @@ class App:
     def show_screen3_result(self):
         self._clear()
         self._current_screen = "result"
+        if hasattr(self, "topnav"):
+            self.topnav.set_active_for_screen("result")
         self.s3_canvas = None
         self.s3_pct_label = None
         self.s3_count_label = None
