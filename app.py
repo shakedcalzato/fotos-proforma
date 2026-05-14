@@ -3153,13 +3153,24 @@ class App:
             font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
         ).pack(anchor="w", pady=(0, 8))
 
-        file_row = tk.Frame(inner, bg=SURFACE)
-        file_row.pack(fill="x", pady=(0, 12))
-        # Check verde redondo (con caracter unicode).
-        tk.Label(
-            file_row, text="✓", font=F(14, "bold"),
-            bg=SURFACE, fg=SUCCESS, padx=2,
-        ).pack(side="left", padx=(0, 8))
+        # Cada archivo en su propia "box" con border 1px (como en Stitch).
+        file_box = tk.Frame(
+            inner, bg=SURFACE,
+            highlightbackground=BORDER_SUBTLE, highlightcolor=BORDER_SUBTLE,
+            highlightthickness=1, bd=0,
+        )
+        file_box.pack(fill="x", pady=(0, 12))
+        file_row = tk.Frame(file_box, bg=SURFACE)
+        file_row.pack(fill="x", padx=12, pady=10)
+        # Check azul en circulo claro (igual al diseño).
+        check_canvas = tk.Canvas(
+            file_row, width=24, height=24, bg=SURFACE,
+            highlightthickness=0, bd=0,
+        )
+        check_canvas.pack(side="left", padx=(0, 10))
+        check_canvas.create_oval(0, 0, 24, 24, fill=ACCENT_TINT, outline="")
+        check_canvas.create_text(12, 12, text="✓", fill=ACCENT, font=F(11, "bold"))
+
         file_text = tk.Frame(file_row, bg=SURFACE)
         file_text.pack(side="left", fill="x", expand=True)
         tk.Label(
@@ -3169,13 +3180,13 @@ class App:
         client = parsed.get("client") or "(sin cliente)"
         tk.Label(
             file_text,
-            text=f"{fmt_label}  ·  {total} SKUs  ·  {client}",
+            text=f"{fmt_label}  ·  {total} SKUs",
             font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
         ).pack(anchor="w")
-        # Boton "papelera" / × para sacar el archivo.
+        # Boton papelera 🗑.
         del_btn = tk.Label(
             file_row, text="🗑", font=F(13),
-            bg=SURFACE, fg=TEXT_LIGHT, padx=6,
+            bg=SURFACE, fg=TEXT_LIGHT, padx=4,
         )
         del_btn.pack(side="right")
         del_btn.bind("<Enter>", lambda _e, b=del_btn: b.configure(fg=ERROR))
@@ -3208,18 +3219,20 @@ class App:
                 font=FONT_CAPTION, bg=SURFACE, fg=ERROR, anchor="w",
             ).pack(anchor="w", pady=(8, 0))
 
-        # ===== TOTAL DETECTADO =====
-        # Linea horizontal separadora.
-        tk.Frame(inner, bg=BORDER_SUBTLE, height=1).pack(fill="x", pady=(14, 10))
-        total_row = tk.Frame(inner, bg=SURFACE)
-        total_row.pack(fill="x")
+        # ===== TOTAL DETECTADO (banner azul claro) =====
+        tk.Frame(inner, bg=SURFACE, height=6).pack(fill="x", pady=(8, 0))
+        # Box con bg azul claro tinted que enmarca el total.
+        total_box = tk.Frame(inner, bg=ACCENT_TINT)
+        total_box.pack(fill="x", pady=(6, 0))
+        total_row = tk.Frame(total_box, bg=ACCENT_TINT)
+        total_row.pack(fill="x", padx=14, pady=12)
         tk.Label(
             total_row, text="Total Detectado:",
-            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+            font=FONT_BODY_BOLD, bg=ACCENT_TINT, fg=TEXT, anchor="w",
         ).pack(side="left")
         tk.Label(
             total_row, text=f"{total} SKUs",
-            font=F(20, "bold"), bg=SURFACE, fg=ACCENT, anchor="e",
+            font=F(20, "bold"), bg=ACCENT_TINT, fg=ACCENT, anchor="e",
         ).pack(side="right")
 
     def _render_s1_batch_info(self):
@@ -3930,26 +3943,47 @@ class App:
         for i in range(3):
             stats_grid.grid_columnconfigure(i, weight=1, uniform="stats3")
 
-        for col, (label, value, color) in enumerate([
-            ("TOTAL PROCESADO", f"{total} SKUs", TEXT),
-            ("COPIADAS",        f"{copied}",     SUCCESS if copied else TEXT_LIGHT),
-            ("FALTANTES",       f"{len(missing)}",
+        # Stats cards con bg tinted + icono a la derecha (estilo Stitch).
+        # tuple: (label, value_text, value_color, label_color, bg_color, icon, icon_color)
+        stat_specs = [
+            ("TOTAL PROCESADO", f"{total} SKUs",  TEXT,    TEXT_LIGHT, SURFACE,    None,  None),
+            ("EXITOSAS",        f"{copied} Copiadas",
+                                ACCENT,  ACCENT,    "#F0F4FF", "📋", ACCENT),
+            ("PENDIENTES",      f"{len(missing)} Faltantes",
+                                ERROR if missing else SUCCESS,
+                                ERROR if missing else SUCCESS,
+                                "#FFF1EF" if missing else "#EAF8EF",
+                                "⚠" if missing else "✓",
                                 ERROR if missing else SUCCESS),
-        ]):
+        ]
+        for col, (label, value, val_color, lbl_color, bg, icon, icon_color) in enumerate(stat_specs):
             stat_card = Card(stats_grid)
             stat_card.grid(
                 row=0, column=col, sticky="nsew",
                 padx=(0 if col == 0 else 6, 0 if col == 2 else 6),
             )
-            inn = tk.Frame(stat_card, bg=SURFACE)
+            # Pintamos el bg del card al color tinted si aplica.
+            try:
+                stat_card.configure(bg=bg)
+            except tk.TclError:
+                pass
+            inn = tk.Frame(stat_card, bg=bg)
             inn.pack(padx=20, pady=16, fill="both", expand=True)
+            # Header con label uppercase + icono opcional a la derecha.
+            head = tk.Frame(inn, bg=bg)
+            head.pack(fill="x", pady=(0, 6))
             tk.Label(
-                inn, text=label,
-                font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-            ).pack(anchor="w", pady=(0, 6))
+                head, text=label,
+                font=FONT_SECTION_LABEL, bg=bg, fg=lbl_color, anchor="w",
+            ).pack(side="left")
+            if icon:
+                tk.Label(
+                    head, text=icon, font=F(14),
+                    bg=bg, fg=icon_color,
+                ).pack(side="right")
             tk.Label(
                 inn, text=value,
-                font=F(28, "bold"), bg=SURFACE, fg=color, anchor="w",
+                font=F(26, "bold"), bg=bg, fg=val_color, anchor="w",
             ).pack(anchor="w")
 
         # ===== CARD DESTINO =====
