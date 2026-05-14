@@ -571,6 +571,11 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
     from collections import Counter
     copied = 0
     copied_per_brand = Counter()
+    # Dedup por archivo de origen: si 2 SKUs distintos (ej. /A/COLOR y
+    # /B/COLOR — distintas tallas pero mismo color) terminan apuntando al
+    # mismo archivo en disco, lo copiamos una sola vez. Evita duplicados
+    # con sufijo _2.
+    copied_sources = set()
     total = len(plan)
     for idx, (parsed, item) in enumerate(plan, 1):
         # Check cancel ANTES de cada SKU para corte rapido.
@@ -599,11 +604,16 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
                 "brand": brand,
             })
             continue
+        # Skip si ya copiamos este archivo para otro SKU (misma foto para
+        # distintas tallas / variantes).
+        if src in copied_sources:
+            continue
         if _copy_to_dest(src, dest, missing, item,
                          brand_subfolder=brand,
                          compress_mode=compress_mode):
             copied += 1
             copied_per_brand[brand] += 1
+            copied_sources.add(src)
     return copied, copied_per_brand
 
 
@@ -670,6 +680,10 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
     from collections import Counter
     copied = 0
     copied_per_brand = Counter()
+    # Dedup por archivo de origen: si 2 SKUs distintos terminan apuntando
+    # al mismo archivo en disco (ej. distintas tallas con mismo color),
+    # lo copiamos una sola vez.
+    copied_sources = set()
     total = len(order)
 
     for idx, key in enumerate(order, 1):
@@ -712,11 +726,14 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
 
         if is_complete and grupal_src:
             # Pediste todos los colores que tenemos: mandamos solo la grupal.
-            if _copy_to_dest(grupal_src, dest, missing, None,
-                             brand_subfolder=brand,
-                             compress_mode=compress_mode):
+            if grupal_src in copied_sources:
+                pass  # ya copiada por otra ref (raro pero posible)
+            elif _copy_to_dest(grupal_src, dest, missing, None,
+                               brand_subfolder=brand,
+                               compress_mode=compress_mode):
                 copied += 1
                 copied_per_brand[brand] += 1
+                copied_sources.add(grupal_src)
         else:
             # No esta completa o no hay grupal: mandamos las individuales pedidas.
             mandated_individuals = False  # ¿realmente mandamos algun individual?
@@ -741,11 +758,16 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                         "brand": brand,
                     })
                     continue
+                # Skip si ya copiamos este archivo (otra talla / variante
+                # del mismo color cayo al mismo archivo).
+                if src in copied_sources:
+                    continue
                 if _copy_to_dest(src, dest, missing, item,
                                  brand_subfolder=brand,
                                  compress_mode=compress_mode):
                     copied += 1
                     copied_per_brand[brand] += 1
+                    copied_sources.add(src)
                     mandated_individuals = True
             # NOTA: si la marca no tiene grupales en disco (ej Sneakers
             # Supply) pero las individuales se mandaron OK, NO agregamos
