@@ -1072,42 +1072,42 @@ class TopNavBar(tk.Frame):
             lbl.pack(side="left")
 
         # ----- Tabs centro -----
+        # fill="y" para que el center y los tabs tomen los 56px de alto del
+        # nav bar. Sin esto, los tabs colapsan al alto del label y el
+        # underline queda fuera del frame visible.
         center = tk.Frame(self, bg=SURFACE)
-        center.pack(side="left", expand=True)
+        center.pack(side="left", expand=True, fill="y")
         for tab_id, label in self.TABS:
             tab_frame = tk.Frame(center, bg=SURFACE)
-            tab_frame.pack(side="left", padx=14, pady=0, fill="y")
+            tab_frame.pack(side="left", padx=14, fill="y")
+            # Label centrado verticalmente (expand=True).
             tab_label = tk.Label(
                 tab_frame, text=label, font=F(14, "normal"),
                 bg=SURFACE, fg=TEXT_MUTED,
             )
-            tab_label.pack(side="top", pady=(18, 0))
-            # Underline: Frame de 2px que aparece/desaparece segun activo.
+            tab_label.pack(expand=True)
+            # Underline al fondo del tab (2px). Solo se packea cuando el
+            # tab esta activo.
             underline = tk.Frame(tab_frame, bg=ACCENT, height=2)
-            underline.pack(side="top", fill="x", pady=(16, 0))
-            underline.pack_forget()  # oculto por default
 
             self._tab_widgets[tab_id] = (tab_frame, tab_label, underline)
-            # Click handler para los tabs "atras" del actual.
+            # Click handler: cualquier tab dispara al callback de App
+            # que decide si la navegacion es valida.
             for w in (tab_frame, tab_label):
                 w.bind("<Button-1>", lambda _e, tid=tab_id: self._on_click(tid))
 
         self.set_active("cargar")
 
     def _on_click(self, tab_id):
-        """Click en un tab. Solo permite ir HACIA ATRAS del tab actual.
-        Para ir adelante hay que usar el flujo normal (Continuar)."""
+        """Click en cualquier tab — delegamos a App, que valida si la
+        navegacion es posible (ej. no podes ir a Configurar sin PDFs)."""
         if self.on_tab_click is None:
             return
-        cur_idx = self.TAB_ORDER.get(self._active_tab, 0)
-        new_idx = self.TAB_ORDER.get(tab_id, 0)
-        if new_idx <= cur_idx:
-            self.on_tab_click(tab_id)
+        self.on_tab_click(tab_id)
 
     def set_active(self, tab_id):
         """Marca un tab como activo (underline azul). Los tabs anteriores
-        quedan clickeables en gris medio, los posteriores en gris claro
-        (deshabilitados visualmente)."""
+        quedan en gris medio, los posteriores en gris claro."""
         if tab_id not in self._tab_widgets:
             return
         self._active_tab = tab_id
@@ -1116,7 +1116,7 @@ class TopNavBar(tk.Frame):
             idx = self.TAB_ORDER[tid]
             if tid == tab_id:
                 label.configure(fg=ACCENT, font=F(14, "bold"))
-                underline.pack(side="top", fill="x", pady=(16, 0))
+                underline.pack(side="bottom", fill="x")
             elif idx < active_idx:
                 label.configure(fg=TEXT_MUTED, font=F(14, "normal"))
                 underline.pack_forget()
