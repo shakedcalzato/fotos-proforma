@@ -1593,19 +1593,26 @@ class App:
     def _refresh_no_ind_visibility(self):
         """Muestra u oculta la sub-seccion "Si la referencia no tiene foto
         individual" segun el modo elegido. Solo aplica al modo 'complete'
-        ('Grupal si esta completa') — en los otros la opcion no se usa."""
+        ('Grupal si esta completa') — en los otros la opcion no se usa.
+
+        En v2.0 la sub-seccion vive en el right_col del grid de pantalla 2,
+        encima de "Tamaño de las fotos". Se packea con side='top' al tope
+        de la columna cuando aparece."""
         sec = getattr(self, "s2_no_ind_section", None)
         if sec is None or not sec.winfo_exists():
             return
         should_show = (self.modo_var.get() == "complete")
         already_shown = bool(sec.winfo_manager())
         if should_show and not already_shown:
-            after = getattr(self, "_s2_no_ind_after", None)
-            if after is not None and after.winfo_exists():
-                sec.pack(anchor="w", pady=(SECTION_GAP, 0), fill="x",
-                         after=after)
+            # Se packea ARRIBA del right_col (before del primer widget que
+            # ya estaba — la card "Tamaño de las fotos"). Si no encontramos
+            # un sibling, simplemente pack al final.
+            parent = sec.master.master  # Card._wrapper.master = right_col
+            siblings = parent.pack_slaves() if parent else []
+            if siblings:
+                sec.pack(fill="x", pady=(0, ELEMENT_GAP), before=siblings[0])
             else:
-                sec.pack(anchor="w", pady=(SECTION_GAP, 0), fill="x")
+                sec.pack(fill="x", pady=(0, ELEMENT_GAP))
         elif (not should_show) and already_shown:
             sec.pack_forget()
 
@@ -3291,52 +3298,57 @@ class App:
             command=self._start_processing, kind="primary",
         ).pack(side="right")
 
-        # Body scrolleable: si el contenido excede el alto disponible, el
-        # usuario puede scrollear con el trackpad/mouse wheel.
+        # Body scrolleable.
         body = self._make_scrollable_body(self.container, padx=SCREEN_PADX)
 
         # ---- VISTA PREVIA POR MARCA ----
-        # Muestra un thumbnail por cada marca detectada (de la grupal de la
-        # primera ref). Da confianza visual de que la app encontro las
-        # fotos correctas antes de procesar.
+        # Banda de thumbnails con scroll horizontal (v2.0). Va arriba del
+        # todo, ocupando el ancho completo.
         if PIL_AVAILABLE:
             self._build_brand_previews(body)
 
-        # ---- MODO DE FOTOS ----
-        self._section_label(body, "Modo de fotos") \
-            .pack(anchor="w", pady=(0, 10))
+        # ---- GRID 2-COLUMNAS para las cards de configuracion ----
+        grid_wrap = tk.Frame(body, bg=BG)
+        grid_wrap.pack(fill="x", pady=(SECTION_GAP, 0))
+        grid_wrap.grid_columnconfigure(0, weight=3, uniform="cols2")
+        grid_wrap.grid_columnconfigure(1, weight=2, uniform="cols2")
+
+        # ===== COL IZQ: Modo de fotos =====
+        mode_card = Card(grid_wrap)
+        mode_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        mode_inner = tk.Frame(mode_card, bg=SURFACE)
+        mode_inner.pack(padx=20, pady=20, fill="both", expand=True)
+        tk.Label(
+            mode_inner, text="Modo de fotos",
+            font=FONT_TITLE, bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w", pady=(0, 14))
         for rid, title, sub, _ in MODOS:
-            OptionCard(body, self.modo_var, rid, title, sub) \
+            OptionCard(mode_inner, self.modo_var, rid, title, sub) \
                 .pack(fill="x", pady=4)
 
-        # ---- MARCAS SIN INDIVIDUALES ----
-        # Sub-opcion que solo aplica al modo "Grupal si esta completa".
-        # En los otros modos no tiene sentido — la escondemos y mostramos
-        # cuando el usuario alterna entre cards. Bindeamos un trace al
-        # modo_var para reaccionar en vivo.
-        self.s2_no_ind_section = tk.Frame(body, bg=BG)
-        # Se empaqueta condicionalmente en _refresh_no_ind_visibility.
-        self._section_label(
-            self.s2_no_ind_section,
-            "Si la referencia no tiene foto individual",
+        # ===== COL DER: 2 cards apiladas =====
+        right_col = tk.Frame(grid_wrap, bg=BG)
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        # --- Card "Si la referencia no tiene foto individual" ---
+        # Se muestra/oculta segun modo_var.
+        self.s2_no_ind_section = Card(right_col)
+        # NO la packeamos aca — _refresh_no_ind_visibility decide.
+        no_ind_inner = tk.Frame(self.s2_no_ind_section, bg=SURFACE)
+        no_ind_inner.pack(padx=20, pady=18, fill="both", expand=True)
+        tk.Label(
+            no_ind_inner, text="Si la referencia no tiene foto individual",
+            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+            wraplength=300, justify="left",
         ).pack(anchor="w", pady=(0, 10))
         SegmentedControl(
-            self.s2_no_ind_section, self.no_ind_var, NO_IND_OPCIONES,
+            no_ind_inner, self.no_ind_var, NO_IND_OPCIONES,
         ).pack(anchor="w")
-
-        # Anchor: el ultimo widget packeado antes de la subseccion.
-        # Lo usamos con pack(after=...) para que la subseccion quede
-        # justo despues de las cards de modo cuando aparece.
-        self._s2_no_ind_after = body.pack_slaves()[-1] if body.pack_slaves() else None
-
-        # Sincronizar visibilidad con el modo actual al renderizar.
+        # Anchor para pack en el right_col cuando se muestra: en la cima.
+        self._s2_no_ind_after = None
         self._refresh_no_ind_visibility()
 
-        # Listener: cuando el modo cambia (click en OptionCard) mostramos/
-        # ocultamos la subseccion en vivo. Solo lo agregamos UNA vez por
-        # vida de la app — sino cada show_screen2 acumula un trace y al
-        # cambiar de modo se disparan todos los viejos (sus widgets ya
-        # destruidos, crashea).
+        # Listener para mostrar/ocultar segun modo.
         if not getattr(self, "_no_ind_trace_added", False):
             try:
                 self.modo_var.trace_add("write", lambda *_: self._refresh_no_ind_visibility())
@@ -3344,58 +3356,84 @@ class App:
                 self.modo_var.trace("w", lambda *_: self._refresh_no_ind_visibility())
             self._no_ind_trace_added = True
 
-        # ---- TAMAÑO DE LAS FOTOS ----
-        # Original / Correo / WhatsApp. Si elige Correo o WhatsApp, en la
-        # copia las fotos se recomprimen con Pillow.
-        self._section_label(body, "Tamaño de las fotos") \
-            .pack(anchor="w", pady=(SECTION_GAP, 10))
+        # --- Card "Tamaño de las fotos" ---
+        compress_card = Card(right_col)
+        compress_card.pack(fill="x", pady=(ELEMENT_GAP, 0))
+        compress_inner = tk.Frame(compress_card, bg=SURFACE)
+        compress_inner.pack(padx=20, pady=18, fill="both", expand=True)
+        tk.Label(
+            compress_inner, text="Tamaño de las fotos",
+            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w", pady=(0, 10))
         for rid, title, sub, _ in COMPRESS_OPCIONES:
-            OptionCard(body, self.compress_var, rid, title, sub) \
-                .pack(fill="x", pady=4)
+            OptionCard(compress_inner, self.compress_var, rid, title, sub) \
+                .pack(fill="x", pady=3)
 
-        # ---- NOMBRE DE LA CARPETA ----
-        # Single: un editor.
-        # Batch: un editor por PDF (con el nombre del archivo arriba).
+        # ===== FILA INFERIOR: 2 cards (nombre carpeta + carpeta destino) =====
+        bottom_grid = tk.Frame(body, bg=BG)
+        bottom_grid.pack(fill="x", pady=(SECTION_GAP, 0))
+        bottom_grid.grid_columnconfigure(0, weight=1, uniform="cols2b")
+        bottom_grid.grid_columnconfigure(1, weight=1, uniform="cols2b")
+
+        # --- Nombre de la carpeta ---
         ok_entries = [e for e in self.parsed_data_list if "parsed" in e]
+        name_card = Card(bottom_grid)
+        name_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        name_inner = tk.Frame(name_card, bg=SURFACE)
+        name_inner.pack(padx=20, pady=18, fill="both", expand=True)
+        tk.Label(
+            name_inner, text="Nombre de la carpeta",
+            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w", pady=(0, 10))
         if ok_entries:
-            self._section_label(body, "Nombre de la carpeta") \
-                .pack(anchor="w", pady=(SECTION_GAP, 10))
-
             if len(ok_entries) == 1:
                 var = self._get_or_create_override_var(ok_entries[0])
-                self._make_name_entry(body, var)
+                self._make_name_entry(name_inner, var)
                 tk.Label(
-                    body,
+                    name_inner,
                     text="Detectado del PDF. Editalo si querés un nombre distinto.",
-                    font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT, anchor="w",
+                    font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
                 ).pack(anchor="w", pady=(6, 0))
             else:
                 # Una sección por PDF / lista
                 for entry in ok_entries:
-                    row = tk.Frame(body, bg=BG)
+                    row = tk.Frame(name_inner, bg=SURFACE)
                     row.pack(fill="x", pady=(0, 10))
                     tk.Label(
                         row, text=_display_name_for_path(entry["path"]),
-                        font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT, anchor="w",
+                        font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
                     ).pack(anchor="w", pady=(0, 4))
                     var = self._get_or_create_override_var(entry)
                     self._make_name_entry(row, var)
+        else:
+            tk.Label(
+                name_inner, text="—",
+                font=FONT_BODY, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            ).pack(anchor="w")
 
-        # ---- CARPETA DESTINO ----
-        self._section_label(body, "Carpeta destino") \
-            .pack(anchor="w", pady=(SECTION_GAP, 10))
-        dest_row = tk.Frame(body, bg=BG)
+        # --- Carpeta destino ---
+        dest_card = Card(bottom_grid)
+        dest_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        dest_inner = tk.Frame(dest_card, bg=SURFACE)
+        dest_inner.pack(padx=20, pady=18, fill="both", expand=True)
+        tk.Label(
+            dest_inner, text="Carpeta destino",
+            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w", pady=(0, 10))
+        dest_row = tk.Frame(dest_inner, bg=SURFACE)
         dest_row.pack(fill="x")
         self.s2_dest_label = tk.Label(
             dest_row,
             text=self._format_dest_path(self.dest_root_var.get()),
-            font=FONT_BODY, bg=BG, fg=TEXT_MUTED, anchor="w",
+            font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED, anchor="w",
+            wraplength=240, justify="left",
         )
-        self.s2_dest_label.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        self.s2_dest_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
         CanvasButton(
             dest_row, text="Cambiar...",
             command=self._on_pick_dest_root,
-            kind="secondary", padx=18,
+            kind="secondary", padx=14, height=32, font=FONT_CAPTION,
+            parent_bg=SURFACE,
         ).pack(side="right")
 
         # Activar mousewheel scroll en todos los descendientes del body
