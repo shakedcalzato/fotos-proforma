@@ -131,14 +131,14 @@ def _find_by_color_any_variant(dirpath, prefix_num, color_upper, recursive):
 
     La variante puede ser:
     - 0 letras: el archivo es directamente "{prefix_num}{color}.ext" sin
-      identificador de variante (caso de fotos cuyo nombre no incluye
-      A/B/E intermedio, ej. "SNM041OFFWHT.jpg").
-    - 1 letra (caso comun: A, B, E, N).
+      identificador de variante (ej. "SNM041OFFWHT.jpg").
+    - 1 letra (caso comun: A, B, E, G, N).
     - 2-3 letras (caso especial: INF para infantes, etc.).
 
-    Solo devuelve match si hay EXACTAMENTE UN archivo que coincida — sino
-    es ambiguo (puede haber el mismo color en varias variantes) y
-    preferimos no decidir nosotros que elegir mal.
+    Si hay varios archivos que matchean el mismo color en distintas
+    variantes, devolvemos el primero por orden alfabetico (determinístico,
+    predecible). Antes preferiamos None en ese caso ("ambiguo") pero
+    Trafico prefiere recibir UNA foto antes que reportarla como faltante.
 
     Args:
         dirpath:     directorio donde buscar (carpeta de marca).
@@ -164,9 +164,13 @@ def _find_by_color_any_variant(dirpath, prefix_num, color_upper, recursive):
             if rest[variant_len:] == color_upper:
                 matches.append(f)
                 break  # match encontrado para este archivo
-    if len(matches) == 1:
-        return matches[0]
-    return None
+    if not matches:
+        return None
+    # Orden alfabetico determinístico (por nombre completo). Si hay varios
+    # con el mismo color en distintas variantes/tallas, el primero alfabetico
+    # gana. Ej: GP14880AWHTBGEBL.jpg gana sobre GP14880GWHTBGEBL.jpg.
+    matches.sort(key=lambda p: p.name.upper())
+    return matches[0]
 
 
 def _iter_image_files(dirpath, recursive):
