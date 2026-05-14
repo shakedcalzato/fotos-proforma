@@ -693,7 +693,7 @@ class DropZone(tk.Canvas):
             border_color = ACCENT
             fill_color = ACCENT_TINT
             text_color = ACCENT
-            icon_bg = "#C5DAFF"  # azul un poco mas saturado
+            icon_bg = "#C5DAFF"
             title = "Soltá el PDF para cargarlo"
             sub = ""
         else:
@@ -701,8 +701,10 @@ class DropZone(tk.Canvas):
             fill_color = SURFACE
             text_color = TEXT_MUTED
             icon_bg = ACCENT_TINT
-            title = "Arrastrá tu proforma PDF aquí o hacé click para elegirla"
-            sub = "Tamaño máximo de archivo: 25MB"
+            # Texto mas corto para que entre en columnas estrechas; el
+            # wrap automatico via width= cubre el caso de columnas chicas.
+            title = "Arrastrá tu proforma PDF o hacé click para elegirla"
+            sub = "Tamaño máximo: 25MB"
 
         # Rectangulo con fondo + 4 lineas dashed encima como "borde".
         pad = 6
@@ -732,16 +734,21 @@ class DropZone(tk.Canvas):
             cx, circle_cy, text="🖼", fill=ACCENT, font=F(20),
         )
 
-        # Texto principal debajo del circulo.
+        # Texto principal debajo del circulo. width= hace wrap automatico
+        # cuando el canvas es estrecho (caso real cuando la ventana se
+        # achica o la columna izq queda angosta).
         title_y = h * 0.66
+        max_text_w = max(160, w - 40)
         self.create_text(
             cx, title_y, text=title,
             fill=text_color, font=FONT_BODY_BOLD,
+            width=max_text_w, justify="center",
         )
         if sub:
             self.create_text(
-                cx, title_y + 20, text=sub,
+                cx, title_y + 24, text=sub,
                 fill=TEXT_LIGHT, font=FONT_CAPTION,
+                width=max_text_w, justify="center",
             )
 
     def _on_click(self, _event=None):
