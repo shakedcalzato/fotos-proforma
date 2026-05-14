@@ -491,6 +491,52 @@ def _bind_dynamic_wraplength(label, margin=0, min_wrap=200):
     label.bind("<Configure>", _on_configure)
 
 
+class Chip(tk.Canvas):
+    """Pill rounded con texto centrado. Usado para badges de formato,
+    contadores de SKUs por marca, etc. (v2.0)
+
+    kinds:
+      "default": gris claro / texto muted.
+      "primary": tint azul / texto azul accent.
+      "gold":    tint dorado / texto gold dark.
+      "success": tint verde / texto verde.
+      "error":   tint rojo / texto rojo.
+    """
+
+    KIND_COLORS = {
+        "default": ("#F2F3FC", "#414753"),    # surface-container-low / text-muted
+        "primary": ("#DFE8FF", "#0066CC"),
+        "gold":    ("#FFF4D6", "#735C00"),
+        "success": ("#D7F5E5", "#1E7A4D"),
+        "error":   ("#FFDAD6", "#93000A"),
+    }
+
+    def __init__(self, parent, text, kind="default", parent_bg=None,
+                 font=None, pad_x=10, pad_y=4):
+        if parent_bg is None:
+            try:
+                parent_bg = parent.cget("bg")
+            except tk.TclError:
+                parent_bg = BG
+        font = font or FONT_CAPTION
+        text_w = _measure_text_width(text, font)
+        width = max(40, text_w + 2 * pad_x)
+        height = 22
+
+        super().__init__(
+            parent, width=width, height=height,
+            bg=parent_bg, highlightthickness=0, bd=0,
+        )
+        bg_color, fg_color = self.KIND_COLORS.get(kind, self.KIND_COLORS["default"])
+        radius = height // 2  # full pill
+        pts = _round_rect_pts(0, 0, width - 1, height - 1, radius)
+        self.create_polygon(pts, smooth=True, fill=bg_color, outline="")
+        self.create_text(
+            width / 2, height / 2, text=text,
+            fill=fg_color, font=font,
+        )
+
+
 class CanvasButton(tk.Canvas):
     """Botón custom dibujado en Canvas. Soporta hover, disabled y bordes
     redondeados. Tres variantes: primary (azul), secondary (gris claro),
@@ -2586,20 +2632,28 @@ class App:
         self._update_dbx_chip()
         self._refresh_dropbox_status(force_async=True)
 
-        # Body scrolleable (igual que pantalla 2): si la card "Resumen" tiene
-        # muchas marcas detectadas, la lista se desborda y el usuario necesita
-        # scroll para ver todo.
+        # Body scrolleable con layout 2-columnas (v2.0). Columna izquierda
+        # = drop zone + botones; columna derecha = resumen de carga.
         body = self._make_scrollable_body(self.container, padx=SCREEN_PADX)
 
-        # Card 1 - selección de archivo
-        self.s1_card = Card(body)
-        self.s1_card.pack(fill="x", pady=(0, ELEMENT_GAP))
+        # Wrapper de 2 columnas: izq mas ancha (peso 3), der mas estrecha
+        # (peso 2). Si la ventana es chica, el grid colapsa naturalmente.
+        grid_wrap = tk.Frame(body, bg=BG)
+        grid_wrap.pack(fill="both", expand=True, pady=(0, ELEMENT_GAP))
+        grid_wrap.grid_columnconfigure(0, weight=3, uniform="cols")
+        grid_wrap.grid_columnconfigure(1, weight=2, uniform="cols")
+        grid_wrap.grid_rowconfigure(0, weight=1)
+
+        # ===== COLUMNA IZQUIERDA: drop + carga =====
+        self.s1_card = Card(grid_wrap)
+        self.s1_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         inner = tk.Frame(self.s1_card, bg=SURFACE)
-        inner.pack(padx=24, pady=24, fill="x")
+        inner.pack(padx=24, pady=24, fill="both", expand=True)
 
+        # Titulo + descripcion arriba.
         tk.Label(
-            inner, text="Proforma PDF", font=FONT_BODY_BOLD,
+            inner, text="📄  Proforma PDF", font=FONT_BODY_BOLD,
             bg=SURFACE, fg=TEXT, anchor="w",
         ).pack(anchor="w")
 
@@ -2609,49 +2663,44 @@ class App:
             bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
             wraplength=WINDOW_W - 2 * SCREEN_PADX - 60, justify="left",
         )
-        self.s1_path_label.pack(anchor="w", fill="x", pady=(4, 6))
+        self.s1_path_label.pack(anchor="w", fill="x", pady=(4, 14))
         _bind_dynamic_wraplength(self.s1_path_label, margin=8)
 
-        # Linea informativa de formatos soportados (empty state). Sirve de
-        # "ayuda invisible": el usuario sabe sin probar que la app entiende
-        # Pepperi y los varios formatos de SAP.
-        tk.Label(
-            inner,
-            text="Compatibles: Pepperi · SAP Factura · SAP Pedido · SAP Proforma · SAP Cotización",
-            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-        ).pack(anchor="w", fill="x", pady=(0, 14))
-
-        # Drop zone — bandeja con borde punteado donde se arrastran PDFs.
-        # Click en cualquier parte = mismo flujo que el boton (filedialog).
-        # Los DROPS los recibe el root window (no la bandeja en si — en macOS
-        # los Canvas widgets reciben eventos DnD de forma poco confiable),
-        # ver App._wire_root_dnd. Esta bandeja solo dibuja y se pinta azul
-        # cuando hay un drag-over en cualquier parte de la ventana.
-        # Cuando no hay archivos cargados la hacemos un poco mas alta (mas
-        # protagonismo en el empty state). Cuando ya hay archivos se mantiene
-        # mas compacta porque es solo un "agregar mas".
-        drop_h = 150 if not self.pdf_paths else 110
+        # Drop zone — bandeja con borde punteado.
+        # Los DROPS los recibe el root window (ver _wire_root_dnd).
+        drop_h = 160 if not self.pdf_paths else 120
         self.s1_drop_zone = DropZone(
             inner,
             on_click=self._on_pick_pdf,
             parent_bg=SURFACE,
             height=drop_h,
         )
-        self.s1_drop_zone.pack(fill="x", pady=(0, 14))
+        self.s1_drop_zone.pack(fill="x", pady=(0, 16))
 
-        # Fila de botones (Seleccionar / Agregar + Limpiar). La etiqueta del
-        # primer boton y la visibilidad del Limpiar dependen de si ya hay
-        # archivos cargados — se re-renderiza en _render_s1_info().
+        # Chips de formatos compatibles.
+        tk.Label(
+            inner, text="FORMATOS COMPATIBLES",
+            font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(anchor="w", pady=(0, 6))
+        chips_row = tk.Frame(inner, bg=SURFACE)
+        chips_row.pack(anchor="w", fill="x", pady=(0, 14))
+        for fmt in ("Pepperi", "SAP Factura", "SAP Pedido", "SAP Proforma", "SAP Cotización"):
+            Chip(chips_row, fmt, kind="default", parent_bg=SURFACE) \
+                .pack(side="left", padx=(0, 6), pady=2)
+
+        # Fila de botones (Seleccionar / Pegar / Limpiar). Se re-renderiza
+        # en _render_s1_pick_buttons segun el estado de archivos cargados.
         self.s1_pick_btn_row = tk.Frame(inner, bg=SURFACE)
-        self.s1_pick_btn_row.pack(anchor="w")
+        self.s1_pick_btn_row.pack(anchor="w", pady=(4, 0))
         self._render_s1_pick_buttons()
 
-        # Card 2 - info parseada (oculto hasta tener PDF)
-        self.s1_info_card = Card(body)
-        # se empaqueta dinámicamente
+        # ===== COLUMNA DERECHA: resumen de carga =====
+        self.s1_info_card = Card(grid_wrap)
+        self.s1_info_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
-        if self.parsed_data:
-            self._render_s1_info()
+        # _render_s1_info se encarga de llenar la card derecha (con empty
+        # state si no hay archivos, o con info de los PDFs cargados).
+        self._render_s1_info()
 
         # Bindeamos el scroll wheel a todos los descendientes del body
         # scrolleable (igual que pantalla 2). Sin esto, la rueda del mouse
@@ -2966,6 +3015,10 @@ class App:
             self._load_pdf_paths(pdfs)
 
     def _render_s1_info(self):
+        # Limpiar la card derecha (es siempre la misma Card en grid).
+        if not (hasattr(self, "s1_info_card") and self.s1_info_card is not None
+                and self.s1_info_card.winfo_exists()):
+            return
         for w in self.s1_info_card.winfo_children():
             w.destroy()
 
@@ -2977,7 +3030,7 @@ class App:
                 text="Empezá soltando una proforma o eligiendo un archivo.",
                 fg=TEXT_LIGHT,
             )
-            self.s1_info_card.pack_forget()
+            self._render_s1_empty_state()
             self._set_next_enabled(False)
             return
 
@@ -3007,11 +3060,39 @@ class App:
         # parte. _bind_scroll_wheel_to_descendants ya hace recursion.
         self._bind_scroll_wheel_to_descendants(self.s1_info_card)
 
+    def _render_s1_empty_state(self):
+        """Pinta el contenido empty-state de la card derecha "Resumen de
+        Carga" cuando todavia no hay PDFs cargados."""
+        inner = tk.Frame(self.s1_info_card, bg=SURFACE)
+        inner.pack(padx=24, pady=24, fill="both", expand=True)
+
+        tk.Label(
+            inner, text="📊  Resumen de Carga", font=FONT_BODY_BOLD,
+            bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+
+        # Mensaje grande centrado en el resto del espacio.
+        spacer = tk.Frame(inner, bg=SURFACE)
+        spacer.pack(fill="both", expand=True)
+        tk.Label(
+            spacer, text="⏳",
+            font=F(40), bg=SURFACE, fg=TEXT_LIGHT,
+        ).pack(pady=(30, 8))
+        tk.Label(
+            spacer, text="Esperando proforma",
+            font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED,
+        ).pack()
+        tk.Label(
+            spacer,
+            text="Cargá un PDF para ver el resumen acá.",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT,
+        ).pack(pady=(4, 30))
+
     def _render_s1_single_info(self):
         """Renderiza el resumen para 1 PDF (formato detallado de siempre)."""
         entry = self.parsed_data_list[0]
         if "error" in entry:
-            self.s1_info_card.pack(fill="x")
+            # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
             inner = tk.Frame(self.s1_info_card, bg=SURFACE)
             inner.pack(padx=24, pady=20, fill="x")
             tk.Label(
@@ -3049,7 +3130,7 @@ class App:
 
         fmt_label = _fmt_label(fmt)
 
-        self.s1_info_card.pack(fill="x")
+        # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
         inner = tk.Frame(self.s1_info_card, bg=SURFACE)
         inner.pack(padx=24, pady=22, fill="x")
 
@@ -3104,7 +3185,7 @@ class App:
 
     def _render_s1_batch_info(self):
         """Renderiza la lista de PDFs cuando son varios (modo batch)."""
-        self.s1_info_card.pack(fill="x")
+        # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
         inner = tk.Frame(self.s1_info_card, bg=SURFACE)
         inner.pack(padx=24, pady=20, fill="x")
 
