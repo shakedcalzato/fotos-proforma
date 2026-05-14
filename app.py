@@ -159,26 +159,26 @@ _PALETTE_LIGHT = {
     # Paleta v2.0 — alineada con el rediseño de Stitch ("Precision Desktop").
     # Tonal layering: BG es el lienzo, SURFACE las cards, distintos grises
     # de borders y textos siguen una jerarquia clara.
-    "BG":              "#F5F5F7",   # canvas / sidebars
+    "BG":              "#F9F9FF",   # surface — canvas levemente azulado (Stitch)
     "SURFACE":         "#FFFFFF",   # cards / superficies principales
     "TEXT":            "#191C22",   # on-surface principal
-    "TEXT_MUTED":      "#414753",   # on-surface-variant (mas oscuro que antes)
+    "TEXT_MUTED":      "#414753",   # on-surface-variant
     "TEXT_LIGHT":      "#727784",   # outline / labels secundarios
-    "ACCENT":          "#0066CC",   # primary blue
-    "ACCENT_HOVER":    "#004E9F",   # primary darkened
-    "ACCENT_TINT":     "#DFE8FF",   # primary-container (azul claro pastel)
-    "BORDER":          "#C1C6D5",   # outline-variant fuerte
-    "BORDER_SUBTLE":   "#E5E5E7",   # 1px border para cards (default)
-    "BORDER_STRONG":   "#727784",   # borde fuerte (estados hover, focus)
-    "SHADOW":          "#E1E2EB",   # tonal layer abajo de cards
-    "DISABLED_BG":     "#ECEDF6",
+    "ACCENT":          "#0066CC",   # primary blue (primary-container)
+    "ACCENT_HOVER":    "#004E9F",   # primary
+    "ACCENT_TINT":     "#DFE8FF",   # on-primary-container (azul pastel)
+    "BORDER":          "#C1C6D5",   # outline-variant
+    "BORDER_SUBTLE":   "#E5E5E7",   # 1px border para cards
+    "BORDER_STRONG":   "#727784",   # outline fuerte (hover, focus)
+    "SHADOW":          "#E1E2EB",   # tonal layer
+    "DISABLED_BG":     "#ECEDF6",   # surface-container
     "DISABLED_FG":     "#A8ADBA",
     "SUCCESS":         "#30A46C",
     "ERROR":           "#BA1A1A",
     "TOAST_BG":        "#191C22",
     "TOAST_FG":        "#FFFFFF",
-    "HOVER_BG":        "#F2F3FC",   # surface-container-low (hover sutil)
-    "GOLD":            "#D4AF37",   # acento de marca, uso sutil
+    "HOVER_BG":        "#ECEDF6",   # surface-container (hover sutil)
+    "GOLD":            "#D4AF37",
 }
 
 _PALETTE_DARK = {
@@ -504,7 +504,7 @@ class Chip(tk.Canvas):
     """
 
     KIND_COLORS = {
-        "default": ("#F2F3FC", "#414753"),    # surface-container-low / text-muted
+        "default": ("#ECEDF6", "#414753"),    # surface-container / text-muted
         "primary": ("#DFE8FF", "#0066CC"),
         "gold":    ("#FFF4D6", "#735C00"),
         "success": ("#D7F5E5", "#1E7A4D"),
@@ -3872,14 +3872,22 @@ class App:
             title = "¡Listo!"
             subtitle = f"{copied} fotos copiadas. Todas encontradas."
 
-        # Header personalizado v2.0: check icono grande + titulo a su derecha.
+        # Header personalizado v2.0: check icono grande circular + titulo
+        # a su derecha. Azul si todo OK, naranja si hay faltantes.
         header_wrap = tk.Frame(self.container, bg=BG)
         header_wrap.pack(fill="x", pady=(22, 14), padx=SCREEN_PADX)
-        check_color = SUCCESS if not missing else ACCENT
-        tk.Label(
-            header_wrap, text="●", font=F(28),
-            bg=BG, fg=check_color,
-        ).pack(side="left", padx=(0, 12))
+        check_color = ACCENT if not missing else "#E07B00"  # azul / naranja
+        check_canvas = tk.Canvas(
+            header_wrap, width=48, height=48, bg=BG,
+            highlightthickness=0, bd=0,
+        )
+        check_canvas.pack(side="left", padx=(0, 14))
+        check_canvas.create_oval(
+            2, 2, 46, 46, fill=check_color, outline="",
+        )
+        check_canvas.create_text(
+            24, 24, text="✓", fill="#FFFFFF", font=F(22, "bold"),
+        )
         title_block = tk.Frame(header_wrap, bg=BG)
         title_block.pack(side="left", fill="x", expand=True)
         tk.Label(
@@ -4206,7 +4214,7 @@ class App:
             font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
         ).pack(anchor="w", pady=(0, 8))
 
-        # Header de columnas — solo labels (Cantidad / SKU ID / Estado).
+        # Header de columnas: Cantidad / SKU ID / Estado / Acción.
         header = tk.Frame(parent, bg=SURFACE)
         header.pack(fill="x", pady=(0, 2))
         tk.Label(
@@ -4217,6 +4225,10 @@ class App:
             header, text="SKU ID",
             font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
         ).pack(side="left", fill="x", expand=True)
+        tk.Label(
+            header, text="Acción",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="e", width=6,
+        ).pack(side="right")
         tk.Label(
             header, text="Estado",
             font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="e", padx=8,
@@ -4260,6 +4272,13 @@ class App:
                 bg=SURFACE, fg=TEXT, anchor="w",
             )
             sku_lbl.pack(side="left", fill="x", expand=True)
+            # Acción: icono 🔍 a la derecha (decorativo + indicador de
+            # interactividad — click en la fila copia el SKU).
+            action_lbl = tk.Label(
+                content, text="🔍",
+                font=F(13), bg=SURFACE, fg=TEXT_LIGHT, width=6, anchor="e",
+            )
+            action_lbl.pack(side="right")
             reason_lbl = tk.Label(
                 content, text=f"●  {m['reason']}", font=FONT_CAPTION,
                 bg=SURFACE, fg=ERROR, anchor="e", padx=8,
@@ -4270,7 +4289,7 @@ class App:
             if idx < len(sorted_missing) - 1:
                 tk.Frame(inner, bg=BORDER_SUBTLE, height=1).pack(fill="x")
 
-            children = [row, content, qty_lbl, sku_lbl, reason_lbl]
+            children = [row, content, qty_lbl, sku_lbl, reason_lbl, action_lbl]
             def _handlers(sku=m["sku"], cs=tuple(children), lbl=sku_lbl):
                 def on_enter(_e):
                     for w in cs:
