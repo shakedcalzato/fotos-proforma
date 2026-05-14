@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.17"
+APP_VERSION = "1.18"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -864,28 +864,44 @@ class OptionCard(tk.Frame):
         self.var.set(self.value)
 
     def _render(self):
+        # Guard: el trace_add al StringVar sobrevive al destroy del widget.
+        # Si volves a pantalla 2 despues de procesar, los OptionCards viejos
+        # estan destruidos pero su trace sigue. Al cambiar de modo, el
+        # trace viejo dispara _render() y crashea con TclError porque los
+        # widgets ya no existen. Saltamos limpio.
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
         selected = (self.var.get() == self.value)
         bg = ACCENT_TINT if selected else SURFACE
         border = ACCENT if selected else BORDER
 
-        self.configure(highlightbackground=border, bg=bg)
-        self._set_bg_recursive(self, bg, skip=self.indicator)
+        try:
+            self.configure(highlightbackground=border, bg=bg)
+            self._set_bg_recursive(self, bg, skip=self.indicator)
 
-        # indicador
-        self.indicator.delete("all")
-        self.indicator.configure(bg=bg)
-        cx, cy, r = 10, 10, 8
-        self.indicator.create_oval(
-            cx - r, cy - r, cx + r, cy + r,
-            outline=ACCENT if selected else BORDER_STRONG,
-            width=1.6, fill=bg,
-        )
-        if selected:
-            r2 = 4
+            # indicador
+            self.indicator.delete("all")
+            self.indicator.configure(bg=bg)
+            cx, cy, r = 10, 10, 8
             self.indicator.create_oval(
-                cx - r2, cy - r2, cx + r2, cy + r2,
-                outline="", fill=ACCENT,
+                cx - r, cy - r, cx + r, cy + r,
+                outline=ACCENT if selected else BORDER_STRONG,
+                width=1.6, fill=bg,
             )
+            if selected:
+                r2 = 4
+                self.indicator.create_oval(
+                    cx - r2, cy - r2, cx + r2, cy + r2,
+                    outline="", fill=ACCENT,
+                )
+        except tk.TclError:
+            # Race condition: el widget se destruyo entre el check y el
+            # configure. Tampoco aca crasheamos.
+            pass
 
     def _set_bg_recursive(self, widget, bg, skip=None):
         if widget is skip:
@@ -939,8 +955,20 @@ class SegmentedControl(tk.Frame):
         self._draw_seg(seg)
 
     def _render(self):
+        # Mismo guard que OptionCard: el trace al StringVar sobrevive al
+        # destroy del widget. Si volves a pantalla 2 los SegmentedControl
+        # viejos estan destruidos pero su trace sigue activo en el var.
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
         for seg in self._segments:
-            self._draw_seg(seg)
+            try:
+                if seg.winfo_exists():
+                    self._draw_seg(seg)
+            except tk.TclError:
+                pass
 
     def _draw_seg(self, seg):
         seg.delete("all")
@@ -3071,11 +3099,16 @@ class App:
         self._refresh_no_ind_visibility()
 
         # Listener: cuando el modo cambia (click en OptionCard) mostramos/
-        # ocultamos la subseccion en vivo.
-        try:
-            self.modo_var.trace_add("write", lambda *_: self._refresh_no_ind_visibility())
-        except AttributeError:
-            self.modo_var.trace("w", lambda *_: self._refresh_no_ind_visibility())
+        # ocultamos la subseccion en vivo. Solo lo agregamos UNA vez por
+        # vida de la app — sino cada show_screen2 acumula un trace y al
+        # cambiar de modo se disparan todos los viejos (sus widgets ya
+        # destruidos, crashea).
+        if not getattr(self, "_no_ind_trace_added", False):
+            try:
+                self.modo_var.trace_add("write", lambda *_: self._refresh_no_ind_visibility())
+            except AttributeError:
+                self.modo_var.trace("w", lambda *_: self._refresh_no_ind_visibility())
+            self._no_ind_trace_added = True
 
         # ---- TAMAÑO DE LAS FOTOS ----
         # Original / Correo / WhatsApp. Si elige Correo o WhatsApp, en la
