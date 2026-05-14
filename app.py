@@ -3834,14 +3834,35 @@ class App:
         dest = self.result["dest"]
 
         if missing:
-            title = "Listo, con algunas faltantes"
+            title = "¡Listo, con algunas faltantes!"
             subtitle = f"{copied} fotos copiadas, {len(missing)} no encontradas."
         else:
-            title = "Listo!"
+            title = "¡Listo!"
             subtitle = f"{copied} fotos copiadas. Todas encontradas."
-        self._header(title, subtitle)
 
-        # Footer primero
+        # Header personalizado v2.0: check icono grande + titulo a su derecha.
+        header_wrap = tk.Frame(self.container, bg=BG)
+        header_wrap.pack(fill="x", pady=(22, 14), padx=SCREEN_PADX)
+        check_color = SUCCESS if not missing else ACCENT
+        tk.Label(
+            header_wrap, text="●", font=F(28),
+            bg=BG, fg=check_color,
+        ).pack(side="left", padx=(0, 12))
+        title_block = tk.Frame(header_wrap, bg=BG)
+        title_block.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            title_block, text=title, font=FONT_DISPLAY,
+            bg=BG, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        sub_lbl = tk.Label(
+            title_block, text=subtitle, font=FONT_SUBTITLE,
+            bg=BG, fg=TEXT_MUTED, anchor="w", justify="left",
+            wraplength=WINDOW_W - 2 * SCREEN_PADX - 60,
+        )
+        sub_lbl.pack(anchor="w", fill="x", pady=(4, 0))
+        _bind_dynamic_wraplength(sub_lbl)
+
+        # Footer primero (queda abajo).
         footer = tk.Frame(self.container, bg=BG)
         footer.pack(side="bottom", fill="x", padx=SCREEN_PADX, pady=24)
 
@@ -3863,31 +3884,45 @@ class App:
         body = tk.Frame(self.container, bg=BG)
         body.pack(fill="both", expand=True, padx=SCREEN_PADX)
 
-        # Stats card
-        stats = Card(body)
-        stats.pack(fill="x", pady=(0, ELEMENT_GAP))
-        si = tk.Frame(stats, bg=SURFACE)
-        si.pack(padx=24, pady=20, fill="x")
+        # ===== 3 CARDS DE STATS EN GRID =====
+        stats_grid = tk.Frame(body, bg=BG)
+        stats_grid.pack(fill="x", pady=(0, ELEMENT_GAP))
+        for i in range(3):
+            stats_grid.grid_columnconfigure(i, weight=1, uniform="stats3")
 
-        for lbl, val, color in [
-            ("SKUs en proforma", str(total), TEXT),
-            ("Copiadas", str(copied), SUCCESS if copied else ERROR),
-            ("Faltantes", str(len(missing)), ERROR if missing else SUCCESS),
-        ]:
-            col = tk.Frame(si, bg=SURFACE)
-            col.pack(side="left", expand=True, fill="x")
-            tk.Label(col, text=val, font=F(26, "bold"), bg=SURFACE, fg=color) \
-                .pack(anchor="w")
-            tk.Label(col, text=lbl, font=FONT_CAPTION, bg=SURFACE, fg=TEXT_MUTED) \
-                .pack(anchor="w", pady=(2, 0))
+        for col, (label, value, color) in enumerate([
+            ("TOTAL PROCESADO", f"{total} SKUs", TEXT),
+            ("COPIADAS",        f"{copied}",     SUCCESS if copied else TEXT_LIGHT),
+            ("FALTANTES",       f"{len(missing)}",
+                                ERROR if missing else SUCCESS),
+        ]):
+            stat_card = Card(stats_grid)
+            stat_card.grid(
+                row=0, column=col, sticky="nsew",
+                padx=(0 if col == 0 else 6, 0 if col == 2 else 6),
+            )
+            inn = tk.Frame(stat_card, bg=SURFACE)
+            inn.pack(padx=20, pady=16, fill="both", expand=True)
+            tk.Label(
+                inn, text=label,
+                font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            ).pack(anchor="w", pady=(0, 6))
+            tk.Label(
+                inn, text=value,
+                font=F(28, "bold"), bg=SURFACE, fg=color, anchor="w",
+            ).pack(anchor="w")
 
-        # Card destino
+        # ===== CARD DESTINO =====
         dest_card = Card(body)
         dest_card.pack(fill="x", pady=(0, ELEMENT_GAP))
         di = tk.Frame(dest_card, bg=SURFACE)
-        di.pack(padx=24, pady=18, fill="x")
-        tk.Label(di, text="CARPETA DESTINO", font=FONT_SECTION_LABEL,
-                 bg=SURFACE, fg=TEXT_LIGHT, anchor="w").pack(anchor="w", fill="x")
+        di.pack(padx=20, pady=16, fill="x")
+        top_dest = tk.Frame(di, bg=SURFACE)
+        top_dest.pack(fill="x")
+        tk.Label(
+            top_dest, text="📁  CARPETA DESTINO",
+            font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(side="left")
         dest_lbl = tk.Label(
             di, text=str(dest), font=FONT_BODY,
             bg=SURFACE, fg=TEXT, anchor="w",
@@ -3896,41 +3931,34 @@ class App:
         dest_lbl.pack(anchor="w", fill="x", pady=(4, 0))
         _bind_dynamic_wraplength(dest_lbl, margin=8)
 
-        # Lista de faltantes scrolleable + boton "Copiar todos"
+        # ===== CARD FALTANTES COMO TABLA =====
         if missing:
             mc = Card(body)
             mc.pack(fill="both", expand=True)
             mi = tk.Frame(mc, bg=SURFACE)
-            mi.pack(padx=24, pady=18, fill="both", expand=True)
+            mi.pack(padx=20, pady=16, fill="both", expand=True)
 
-            # Orden alfabetico por SKU para que sea facil ubicar una ref.
-            # (Antes ordenabamos por qty descendente — cambiar a alfabetico
-            # facilita buscar visualmente.)
+            # Orden alfabetico por SKU.
             sorted_missing = sorted(missing, key=lambda m: (m.get("sku") or "").upper())
 
-            # Header con label + boton "Copiar todos" a la derecha
+            # Header: titulo "⚠ FOTOS NO ENCONTRADAS" + boton "Copiar todos".
             header_row = tk.Frame(mi, bg=SURFACE)
-            header_row.pack(fill="x", pady=(0, 8))
+            header_row.pack(fill="x", pady=(0, 12))
             tk.Label(
-                header_row, text=f"FALTANTES ({len(sorted_missing)})",
-                font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+                header_row,
+                text=f"⚠  FOTOS NO ENCONTRADAS ({len(sorted_missing)})",
+                font=FONT_SECTION_LABEL, bg=SURFACE, fg=ERROR, anchor="w",
             ).pack(side="left")
             self._copy_all_btn = CanvasButton(
-                header_row, text="Copiar todos",
+                header_row, text="📋  Copiar todos",
                 command=lambda: self._copy_all_missing(sorted_missing),
-                kind="secondary", padx=14, height=28, font=FONT_CAPTION,
+                kind="secondary", padx=14, height=30, font=FONT_CAPTION,
                 parent_bg=SURFACE,
             )
             self._copy_all_btn.pack(side="right")
 
-            # Hint
-            tk.Label(
-                mi,
-                text="Tocá un faltante para copiar el código al portapapeles.",
-                font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-            ).pack(anchor="w", pady=(0, 8))
-
-            self._build_scrollable_missing_list(mi, sorted_missing)
+            # Tabla con header de columnas.
+            self._build_missing_table(mi, sorted_missing)
 
     def _render_screen3_batch(self):
         """Pantalla 3 cuando se procesaron varias proformas (batch)."""
@@ -4132,6 +4160,111 @@ class App:
             for child in widget.winfo_children():
                 _bind_wheel(child)
         canvas.bind("<MouseWheel>", _on_mousewheel)
+        _bind_wheel(inner)
+
+    def _build_missing_table(self, parent, sorted_missing):
+        """Renderea la lista de faltantes como una tabla con header de
+        columnas. v2.0 — reemplaza visualmente a la lista plana anterior
+        (que sigue disponible via _build_scrollable_missing_list para
+        compat con la pantalla 3 batch)."""
+        # Hint chico.
+        tk.Label(
+            parent,
+            text="Tocá una fila para copiar el código al portapapeles.",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(anchor="w", pady=(0, 8))
+
+        # Header de columnas — solo labels (Cantidad / SKU ID / Estado).
+        header = tk.Frame(parent, bg=SURFACE)
+        header.pack(fill="x", pady=(0, 2))
+        tk.Label(
+            header, text="Cantidad",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, width=12, anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            header, text="SKU ID",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        tk.Label(
+            header, text="Estado",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="e", padx=8,
+        ).pack(side="right")
+        # Hairline divisora bajo el header.
+        tk.Frame(parent, bg=BORDER_SUBTLE, height=1).pack(fill="x", pady=(0, 2))
+
+        # Wrapper con Canvas + Scrollbar.
+        wrap = tk.Frame(parent, bg=SURFACE)
+        wrap.pack(fill="both", expand=True)
+        canvas = tk.Canvas(
+            wrap, bg=SURFACE, highlightthickness=0, bd=0, height=180,
+        )
+        scrollbar = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        inner = tk.Frame(canvas, bg=SURFACE)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(_e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _on_inner_configure)
+        def _on_canvas_configure(e):
+            canvas.itemconfig(win_id, width=e.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        for idx, m in enumerate(sorted_missing):
+            row = tk.Frame(inner, bg=SURFACE)
+            row.pack(fill="x", pady=0)
+            content = tk.Frame(row, bg=SURFACE)
+            content.pack(fill="x", padx=0, pady=8)
+
+            qty_lbl = tk.Label(
+                content, text=f"{m['qty']} pares",
+                font=FONT_BODY, bg=SURFACE, fg=TEXT, width=12, anchor="w",
+            )
+            qty_lbl.pack(side="left")
+            sku_lbl = tk.Label(
+                content, text=m["sku"], font=FONT_MONO,
+                bg=SURFACE, fg=TEXT, anchor="w",
+            )
+            sku_lbl.pack(side="left", fill="x", expand=True)
+            reason_lbl = tk.Label(
+                content, text=f"●  {m['reason']}", font=FONT_CAPTION,
+                bg=SURFACE, fg=ERROR, anchor="e", padx=8,
+            )
+            reason_lbl.pack(side="right")
+
+            # Hairline divisora entre filas (no en la ultima).
+            if idx < len(sorted_missing) - 1:
+                tk.Frame(inner, bg=BORDER_SUBTLE, height=1).pack(fill="x")
+
+            children = [row, content, qty_lbl, sku_lbl, reason_lbl]
+            def _handlers(sku=m["sku"], cs=tuple(children), lbl=sku_lbl):
+                def on_enter(_e):
+                    for w in cs:
+                        try: w.configure(bg=HOVER_BG)
+                        except tk.TclError: pass
+                def on_leave(_e):
+                    for w in cs:
+                        try: w.configure(bg=SURFACE)
+                        except tk.TclError: pass
+                def on_click(_e):
+                    self._copy_sku_to_clipboard(sku, lbl)
+                return on_enter, on_leave, on_click
+            on_enter, on_leave, on_click = _handlers()
+            for w in children:
+                w.bind("<Enter>", on_enter)
+                w.bind("<Leave>", on_leave)
+                w.bind("<Button-1>", on_click)
+
+        # Mouse wheel scroll.
+        def _on_wheel(event):
+            canvas.yview_scroll(int(-1 * event.delta), "units")
+        def _bind_wheel(widget):
+            widget.bind("<MouseWheel>", _on_wheel)
+            for child in widget.winfo_children():
+                _bind_wheel(child)
+        canvas.bind("<MouseWheel>", _on_wheel)
         _bind_wheel(inner)
 
     def _build_scrollable_missing_list(self, parent, sorted_missing,
