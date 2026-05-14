@@ -317,7 +317,7 @@ WINDOW_H = 650
 WINDOW_W_MIN = 600
 WINDOW_H_MIN = 500
 
-APP_VERSION = "1.18"
+APP_VERSION = "1.19"
 
 SCREEN_PADX = 40
 SECTION_GAP = 18   # antes 28 - ganamos 30-40px verticales
@@ -1255,20 +1255,18 @@ class App:
         # forzamos aca por si la pantalla 1 todavia no se renderizo.
         self._refresh_dropbox_status(force_async=True)
 
-        # Chequeo de updates contra GitHub Releases en background. Si hay
-        # una version mas nueva, mostramos un banner no-intrusivo arriba
-        # de pantalla 1. El thread es daemon y completamente safe-to-fail:
-        # sin internet o sin releases publicados, el banner no aparece.
-        # (Las flags _update_* ya estan inicializadas arriba, antes de
-        # show_screen1, para que esa pantalla pueda leerlas sin crashear.)
-        threading.Thread(target=self._check_for_updates, daemon=True).start()
-
-        # Auto-install local: si el .exe esta corriendo desde una carpeta
-        # de cloud-sync (Dropbox, OneDrive, etc), ofrecemos copiarlo a
-        # %LOCALAPPDATA% asi el auto-update funciona sin que Dropbox lo
-        # revierta. Se hace despues de show_screen1 para que la pantalla
-        # ya este montada cuando aparece el dialog.
-        self.root.after(800, self._check_install_location)
+        # NOTA: auto-update y auto-install local DESACTIVADOS desde v1.19.
+        # No funcionaba confiable en las maquinas de Trafico (Windows con
+        # el .exe en Dropbox revertia los reemplazos). Las versiones nuevas
+        # ahora se distribuyen manualmente: Shaked manda el .exe nuevo por
+        # WhatsApp y trafico lo reemplaza a mano.
+        #
+        # El codigo de _check_for_updates / _check_install_location /
+        # _perform_update sigue en el archivo por si en el futuro queremos
+        # volver a activarlo — pero no se llama desde el flujo de arranque.
+        #
+        # threading.Thread(target=self._check_for_updates, daemon=True).start()
+        # self.root.after(800, self._check_install_location)
 
         # Nota: el modo light/dark se aplica al arrancar (ver
         # _apply_palette_globals al cargar el modulo). Si el usuario cambia
