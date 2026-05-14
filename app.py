@@ -556,11 +556,12 @@ class CanvasButton(tk.Canvas):
         }
 
     def __init__(self, parent, text, command, kind="primary",
-                 height=44, padx=24, font=FONT_BUTTON, parent_bg=None):
-        # Medir ancho del texto via Font.measure() (no crea widget temporal,
-        # que causaba TclError 'invalid command name' cuando lo destruiamos
-        # antes de inicializar el Canvas).
-        text_w = _measure_text_width(text, font)
+                 height=44, padx=24, font=FONT_BUTTON, parent_bg=None,
+                 icon=None):
+        # icon: emoji o caracter unicode chico que aparece como prefijo
+        # antes del texto. Ej. "⊕", "📋", "→".
+        display = f"{icon}  {text}" if icon else text
+        text_w = _measure_text_width(display, font)
         width = text_w + 2 * padx
 
         if parent_bg is None:
@@ -576,11 +577,9 @@ class CanvasButton(tk.Canvas):
         self.cfg = self.kinds()[kind].copy()
         self.kind = kind
         self.command = command
-        self._text = text
+        self._text = display
         self._enabled = True
         self._hover = False
-        # Ojo: _w es atributo INTERNO de tkinter (path tcl). Usamos _width/_height
-        # para nuestros propios valores.
         self._width = width
         self._height = height
         self._radius = 10
@@ -694,22 +693,18 @@ class DropZone(tk.Canvas):
             border_color = ACCENT
             fill_color = ACCENT_TINT
             text_color = ACCENT
+            icon_bg = "#C5DAFF"  # azul un poco mas saturado
             title = "Soltá el PDF para cargarlo"
             sub = ""
         else:
             border_color = BORDER_STRONG
             fill_color = SURFACE
             text_color = TEXT_MUTED
-            title = "Arrastrá tu proforma PDF aquí"
-            sub = ("o hacé click para elegirla"
-                   if DND_AVAILABLE
-                   else "Hacé click para elegir un archivo")
+            icon_bg = ACCENT_TINT
+            title = "Arrastrá tu proforma PDF aquí o hacé click para elegirla"
+            sub = "Tamaño máximo de archivo: 25MB"
 
-        # Rectangulo con borde punteado. tk Canvas no soporta dashed en
-        # create_rectangle con fill simultaneamente en todos los backends,
-        # asi que dibujamos:
-        # 1) un rectangulo plano para el fondo (sin outline)
-        # 2) 4 lineas dashed encima para el "borde"
+        # Rectangulo con fondo + 4 lineas dashed encima como "borde".
         pad = 6
         self.create_rectangle(
             pad, pad, w - pad, h - pad,
@@ -717,30 +712,36 @@ class DropZone(tk.Canvas):
         )
         dash = (5, 4)
         line_kwargs = {"fill": border_color, "width": 2, "dash": dash}
-        # Top
         self.create_line(pad, pad, w - pad, pad, **line_kwargs)
-        # Bottom
         self.create_line(pad, h - pad, w - pad, h - pad, **line_kwargs)
-        # Left
         self.create_line(pad, pad, pad, h - pad, **line_kwargs)
-        # Right
         self.create_line(w - pad, pad, w - pad, h - pad, **line_kwargs)
 
-        # Texto centrado
+        # Circulo azul claro central con icono adentro.
         cx = w / 2
+        # Vertical layout: circulo arriba, titulo medio, sub abajo.
+        circle_r = 24
+        circle_cy = h * 0.32
+        self.create_oval(
+            cx - circle_r, circle_cy - circle_r,
+            cx + circle_r, circle_cy + circle_r,
+            fill=icon_bg, outline="",
+        )
+        # Icono de imagen/fotos.
+        self.create_text(
+            cx, circle_cy, text="🖼", fill=ACCENT, font=F(20),
+        )
+
+        # Texto principal debajo del circulo.
+        title_y = h * 0.66
+        self.create_text(
+            cx, title_y, text=title,
+            fill=text_color, font=FONT_BODY_BOLD,
+        )
         if sub:
             self.create_text(
-                cx, h / 2 - 10, text=title,
-                fill=text_color, font=FONT_BODY_BOLD,
-            )
-            self.create_text(
-                cx, h / 2 + 14, text=sub,
+                cx, title_y + 20, text=sub,
                 fill=TEXT_LIGHT, font=FONT_CAPTION,
-            )
-        else:
-            self.create_text(
-                cx, h / 2, text=title,
-                fill=text_color, font=FONT_BODY_BOLD,
             )
 
     def _on_click(self, _event=None):
@@ -2595,7 +2596,7 @@ class App:
         self.s1_update_banner = None
         self._show_update_banner()
         self._header(
-            "Fotos Proforma",
+            "Cargar Proforma",
             "Cargá una proforma en PDF y armo la carpeta de fotos para WhatsApp.",
         )
 
@@ -2673,9 +2674,9 @@ class App:
         self.s1_path_label.pack(anchor="w", fill="x", pady=(4, 14))
         _bind_dynamic_wraplength(self.s1_path_label, margin=8)
 
-        # Drop zone — bandeja con borde punteado.
+        # Drop zone — bandeja con borde punteado + icono central grande.
         # Los DROPS los recibe el root window (ver _wire_root_dnd).
-        drop_h = 160 if not self.pdf_paths else 120
+        drop_h = 200 if not self.pdf_paths else 150
         self.s1_drop_zone = DropZone(
             inner,
             on_click=self._on_pick_pdf,
@@ -2758,25 +2759,25 @@ class App:
 
         has_files = bool(self.pdf_paths)
         primary_text = "Agregar más..." if has_files else "Seleccionar archivo(s)..."
+        primary_icon = "＋" if not has_files else "↑"
         CanvasButton(
             self.s1_pick_btn_row, text=primary_text,
             command=self._on_pick_pdf, kind="primary",
-            parent_bg=SURFACE,
+            parent_bg=SURFACE, icon=primary_icon,
         ).pack(side="left")
 
-        # Botón "Pegar lista..." — alternativa al PDF: el usuario pega un
-        # listado de SKUs sin tener una proforma en PDF.
+        # Botón "Pegar lista..." — alternativa al PDF.
         CanvasButton(
             self.s1_pick_btn_row, text="Pegar lista...",
             command=self._on_paste_list, kind="secondary",
-            parent_bg=SURFACE,
+            parent_bg=SURFACE, icon="📋",
         ).pack(side="left", padx=(8, 0))
 
         if has_files:
             CanvasButton(
                 self.s1_pick_btn_row, text="Limpiar",
                 command=self._clear_pdf_paths, kind="secondary",
-                parent_bg=SURFACE,
+                parent_bg=SURFACE, icon="✕",
             ).pack(side="left", padx=(8, 0))
 
     def _on_pick_pdf(self):
@@ -3139,56 +3140,87 @@ class App:
 
         # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
         inner = tk.Frame(self.s1_info_card, bg=SURFACE)
-        inner.pack(padx=24, pady=22, fill="x")
+        inner.pack(padx=24, pady=22, fill="both", expand=True)
 
         tk.Label(
-            inner, text="Resumen", font=FONT_BODY_BOLD,
+            inner, text="📊  Resumen de Carga", font=FONT_BODY_BOLD,
             bg=SURFACE, fg=TEXT, anchor="w",
-        ).pack(anchor="w", pady=(0, 12))
+        ).pack(anchor="w", pady=(0, 14))
 
-        client = parsed.get("client")
-        rows = [
-            ("Cliente", client or "(no detectado)"),
-            ("Formato", fmt_label),
-            ("SKUs totales", str(total)),
-            ("Referencias únicas", str(len(refs))),
-        ]
-        if unrec:
-            rows.append(("Marcas no reconocidas", f"{unrec} código(s)"))
-        if suspect:
-            rows.append(("SKUs ambiguos", f"{suspect} (resuelvo con fuzzy match)"))
+        # ===== ARCHIVOS CARGADOS =====
+        tk.Label(
+            inner, text="ARCHIVOS CARGADOS",
+            font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(anchor="w", pady=(0, 8))
 
-        for label, value in rows:
-            row = tk.Frame(inner, bg=SURFACE)
-            row.pack(fill="x", pady=3)
-            tk.Label(
-                row, text=label, font=FONT_BODY,
-                bg=SURFACE, fg=TEXT_MUTED, width=22, anchor="w",
-            ).pack(side="left")
-            tk.Label(
-                row, text=value, font=FONT_BODY,
-                bg=SURFACE, fg=TEXT, anchor="w",
-            ).pack(side="left", fill="x", expand=True)
+        file_row = tk.Frame(inner, bg=SURFACE)
+        file_row.pack(fill="x", pady=(0, 12))
+        # Check verde redondo (con caracter unicode).
+        tk.Label(
+            file_row, text="✓", font=F(14, "bold"),
+            bg=SURFACE, fg=SUCCESS, padx=2,
+        ).pack(side="left", padx=(0, 8))
+        file_text = tk.Frame(file_row, bg=SURFACE)
+        file_text.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            file_text, text=_display_name_for_path(entry["path"]),
+            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        client = parsed.get("client") or "(sin cliente)"
+        tk.Label(
+            file_text,
+            text=f"{fmt_label}  ·  {total} SKUs  ·  {client}",
+            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(anchor="w")
+        # Boton "papelera" / × para sacar el archivo.
+        del_btn = tk.Label(
+            file_row, text="🗑", font=F(13),
+            bg=SURFACE, fg=TEXT_LIGHT, padx=6,
+        )
+        del_btn.pack(side="right")
+        del_btn.bind("<Enter>", lambda _e, b=del_btn: b.configure(fg=ERROR))
+        del_btn.bind("<Leave>", lambda _e, b=del_btn: b.configure(fg=TEXT_LIGHT))
+        del_btn.bind("<Button-1>", lambda _e, p=entry["path"]: self._remove_pdf(p))
 
-        # Desglose por marca (siempre, aunque sea una sola)
+        # ===== DESGLOSE POR MARCA =====
         if brand_counts:
             tk.Label(
-                inner, text="MARCAS DETECTADAS",
+                inner, text="DESGLOSE POR MARCA",
                 font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-            ).pack(anchor="w", pady=(14, 6))
-            # Ordenamos por cantidad de SKUs, más a menos
+            ).pack(anchor="w", pady=(8, 8))
             for brand in sorted(brand_counts.keys(), key=lambda b: -brand_counts[b]):
                 row = tk.Frame(inner, bg=SURFACE)
-                row.pack(fill="x", pady=2)
+                row.pack(fill="x", pady=3)
                 tk.Label(
                     row, text=brand, font=FONT_BODY,
-                    bg=SURFACE, fg=TEXT, width=22, anchor="w",
+                    bg=SURFACE, fg=TEXT, anchor="w",
                 ).pack(side="left")
                 count = brand_counts[brand]
-                tk.Label(
-                    row, text=f"{count} SKU{'s' if count != 1 else ''}",
-                    font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED, anchor="w",
-                ).pack(side="left")
+                Chip(
+                    row, f"{count} SKU{'s' if count != 1 else ''}",
+                    kind="primary", parent_bg=SURFACE,
+                ).pack(side="right")
+
+        if unrec:
+            tk.Label(
+                inner,
+                text=f"⚠  {unrec} marca{'s' if unrec != 1 else ''} no reconocida{'s' if unrec != 1 else ''}",
+                font=FONT_CAPTION, bg=SURFACE, fg=ERROR, anchor="w",
+            ).pack(anchor="w", pady=(8, 0))
+
+        # ===== TOTAL DETECTADO =====
+        # Linea horizontal separadora.
+        tk.Frame(inner, bg=BORDER_SUBTLE, height=1).pack(fill="x", pady=(14, 10))
+        total_row = tk.Frame(inner, bg=SURFACE)
+        total_row.pack(fill="x")
+        tk.Label(
+            total_row, text="Total Detectado:",
+            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            total_row, text=f"{total} SKUs",
+            font=F(20, "bold"), bg=SURFACE, fg=ACCENT, anchor="e",
+        ).pack(side="right")
 
     def _render_s1_batch_info(self):
         """Renderiza la lista de PDFs cuando son varios (modo batch)."""
