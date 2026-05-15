@@ -49,11 +49,12 @@ except Exception as _e:
 # PIL para renderizar thumbnails de fotos en pantalla 2. Si no carga
 # (raro), solo perdemos la vista previa — el resto de la app sigue OK.
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageDraw
     PIL_AVAILABLE = True
 except Exception:
     Image = None
     ImageTk = None
+    ImageDraw = None
     PIL_AVAILABLE = False
 
 
@@ -284,6 +285,53 @@ BORDER = BORDER_SUBTLE = BORDER_STRONG = SHADOW = ""
 DISABLED_BG = DISABLED_FG = SUCCESS = ERROR = ""
 TOAST_BG = TOAST_FG = HOVER_BG = GOLD = ""
 _apply_palette_globals(_detect_dark_mode())
+
+
+def _square_crop(pil_img):
+    """Devuelve una version cuadrada centrada de la imagen. Si ya es
+    cuadrada, la devuelve tal cual. Sirve para que los thumbnails de
+    marca no se distorsionen al hacer resize fijo a NxN."""
+    if pil_img is None:
+        return pil_img
+    w, h = pil_img.size
+    if w == h:
+        return pil_img
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    return pil_img.crop((left, top, left + side, top + side))
+
+
+def _round_image_corners(pil_img, radius, bg_color):
+    """Devuelve una nueva PIL Image con esquinas redondeadas. Fuera del
+    rounded area, el píxel se pinta con `bg_color` — asi en tkinter
+    queda perfecto cuando el Canvas tiene ese mismo color de fondo.
+
+    Si ImageDraw no esta disponible (PIL muy viejo), devuelve la imagen
+    original sin tocarla — el fallback se ve cuadrado pero no rompe."""
+    if ImageDraw is None or pil_img is None:
+        return pil_img
+    w, h = pil_img.size
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, w, h), radius=radius, fill=255,
+    )
+    bg = Image.new("RGB", (w, h), bg_color)
+    return Image.composite(pil_img.convert("RGB"), bg, mask)
+
+
+def _canvas_rounded_fill(canvas, x1, y1, x2, y2, r, fill):
+    """Dibuja un rectángulo lleno con esquinas redondeadas en un Canvas
+    tkinter (no hay primitive nativo). Estrategia: 2 rects cruzados que
+    cubren todo el interior salvo las 4 esquinas, + 4 oves del tamaño 2r
+    para redondear esas esquinas. Sirve tanto para placeholders como
+    para fondos detrás de imagenes."""
+    canvas.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline="")
+    canvas.create_rectangle(x1, y1 + r, x2, y2 - r, fill=fill, outline="")
+    canvas.create_oval(x1, y1, x1 + 2 * r, y1 + 2 * r, fill=fill, outline="")
+    canvas.create_oval(x2 - 2 * r, y1, x2, y1 + 2 * r, fill=fill, outline="")
+    canvas.create_oval(x1, y2 - 2 * r, x1 + 2 * r, y2, fill=fill, outline="")
+    canvas.create_oval(x2 - 2 * r, y2 - 2 * r, x2, y2, fill=fill, outline="")
 
 
 # =============================================================================
@@ -1692,45 +1740,89 @@ class App:
 
     # ---- Vista previa de fotos por marca (pantalla 2) ----------------------
 
+    # Tamaño visual del thumbnail (cuadrado) y radius de las esquinas.
+    # Usado por _build_brand_previews y los helpers async — centralizado
+    # para que cambiar el size no requiera tocar varios callers.
+    _BRAND_THUMB_SIZE = 80
+    _BRAND_THUMB_RADIUS = 10
+
     def _build_brand_previews(self, parent):
         """Sección de pantalla 2 que muestra un thumbnail por marca detectada
-        en las proformas. La carga es async en thread daemon — la UI no se
-        bloquea esperando que se lean las fotos."""
+        en las proformas. La carga real de fotos es async (thread daemon);
+        mientras tanto se ve el placeholder con iniciales sobre fondo gris
+        claro. El layout replica el rediseño Stitch:
+
+        - Header con "Vista previa" a la izquierda y un contador "N
+          PRODUCTOS DETECTADOS" alineado a la derecha (uppercase tracking).
+        - Una fila horizontal de thumbnails 80x80 con border-radius 10.
+        - Despues de los thumbnails reales, un slot placeholder dasheado
+          con un icono central — representa "hay mas o tu marca aca".
+        - Nombre de la marca debajo en gris.
+
+        Si hay muchas marcas y no entran en el ancho de la ventana,
+        seguimos usando un scroll horizontal (raro en Calzato porque
+        son ~10 marcas total, pero util por si crece).
+        """
         if not PIL_AVAILABLE:
             return
         if not (self.dropbox_status and self.dropbox_status.get("connected")):
             return
 
-        # Recolectar primera ref con foto (parsed, item) por marca de TODAS
-        # las proformas cargadas. Filtramos SKUs surtido (no hay individual,
-        # pero la grupal igual existe asi que las dejamos).
+        # Recolectar primera ref (parsed, item) por marca de TODAS las
+        # proformas cargadas. Es lo que el async loader usa para buscar
+        # una foto representativa por marca.
         by_brand = {}  # brand -> (parsed, item)
+        total_items = 0
         for entry in self.parsed_data_list:
             if "parsed" not in entry:
                 continue
             for item in entry["parsed"]["items"]:
+                total_items += 1
                 parsed = parse_sku(item["sku"])
-                if parsed and parsed.get("brand") and parsed["brand"] not in by_brand:
+                if (parsed and parsed.get("brand")
+                        and parsed["brand"] not in by_brand):
                     by_brand[parsed["brand"]] = (parsed, item)
         if not by_brand:
             return
 
-        # Section label + frame horizontal de thumbnails con scroll horizontal
-        # — si hay muchas marcas no entran en el ancho de la ventana, asi el
-        # usuario puede arrastrar para ver el resto.
-        self._section_label(parent, "Vista previa") \
-            .pack(anchor="w", pady=(0, 10))
+        # ----- Header con titulo + contador -----
+        header = tk.Frame(parent, bg=BG)
+        header.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            header, text="Vista previa",
+            font=FONT_TITLE, bg=BG, fg=TEXT, anchor="w",
+        ).pack(side="left")
+        # Contador a la derecha: "N PRODUCTOS DETECTADOS" en gris claro
+        # uppercase con tracking visual (no podemos modificar letter-spacing
+        # en tk classic; FONT_SECTION_LABEL ya viene en peso bold chico).
+        n = total_items
+        counter_text = (
+            f"{n} PRODUCTO DETECTADO" if n == 1
+            else f"{n} PRODUCTOS DETECTADOS"
+        )
+        tk.Label(
+            header, text=counter_text,
+            font=FONT_SECTION_LABEL, bg=BG, fg=TEXT_LIGHT, anchor="e",
+        ).pack(side="right")
 
+        # ----- Fila de thumbnails -----
         wrap = tk.Frame(parent, bg=BG)
         wrap.pack(fill="x", pady=(0, SECTION_GAP))
 
+        # Calculamos altura del Canvas wrapper: thumb_size + pad + label.
+        size = self._BRAND_THUMB_SIZE
+        h_total = size + 6 + 18 + 8  # thumb + gap + caption + bottom pad
         thumbs_canvas = tk.Canvas(
             wrap, bg=BG, highlightthickness=0, bd=0,
-            height=108,  # alto fijo: 72 thumbnail + 4 pad + ~20 label + scrollbar
+            height=h_total,
         )
-        hbar = tk.Scrollbar(wrap, orient="horizontal", command=thumbs_canvas.xview)
+        hbar = tk.Scrollbar(
+            wrap, orient="horizontal", command=thumbs_canvas.xview,
+        )
         thumbs_canvas.configure(xscrollcommand=hbar.set)
         thumbs_canvas.pack(side="top", fill="x")
+        # Scrollbar solo si hay demasiadas marcas. Lo packeamos siempre;
+        # cuando todo entra, el scroll no hace nada.
         hbar.pack(side="bottom", fill="x")
 
         thumbs_frame = tk.Frame(thumbs_canvas, bg=BG)
@@ -1740,32 +1832,118 @@ class App:
             thumbs_canvas.configure(scrollregion=thumbs_canvas.bbox("all"))
         thumbs_frame.bind("<Configure>", _on_thumbs_configure)
 
-        # Por cada marca: columna con placeholder Canvas + nombre debajo.
-        # Los placeholders se reemplazan por la imagen real cuando llega.
+        # Slots visibles maximos en la fila. Si hay mas marcas que esto,
+        # el ultimo slot se reemplaza por un placeholder "..." dasheado
+        # (indica "hay mas"). Si entran todas, no agregamos el placeholder.
+        MAX_VISIBLE = 7
+        all_brands = list(by_brand.keys())
+        overflow = len(all_brands) > MAX_VISIBLE
+        # Cuando hay overflow reservamos el ultimo slot para el "...".
+        visible_brands = (all_brands[:MAX_VISIBLE - 1]
+                          if overflow else all_brands)
+
+        # Por cada marca visible: columna con thumb Canvas + nombre debajo.
+        # Los placeholders de iniciales se reemplazan por la imagen real
+        # cuando termina el load async.
         self._brand_preview_widgets = {}
-        for brand in by_brand:
+        for brand in visible_brands:
             col = tk.Frame(thumbs_frame, bg=BG)
-            col.pack(side="left", padx=(0, 10))
-            canvas = tk.Canvas(
-                col, width=72, height=72, bg=SURFACE,
-                highlightthickness=1, highlightbackground=BORDER_SUBTLE,
-                bd=0,
-            )
+            col.pack(side="left", padx=(0, 12))
+            canvas = self._make_brand_thumb_canvas(col, brand)
             canvas.pack()
-            # Placeholder: iniciales de la marca centradas en gris muy claro.
-            initials = "".join(w[0] for w in brand.split()[:2]).upper()[:3] or brand[:3].upper()
-            canvas.create_text(
-                36, 36, text=initials, font=FONT_BODY_BOLD, fill=TEXT_LIGHT,
-            )
-            # Nombre de la marca debajo (truncado si es muy largo)
             display_name = brand if len(brand) <= 12 else brand[:11] + "…"
             tk.Label(
                 col, text=display_name, font=FONT_CAPTION,
                 bg=BG, fg=TEXT_MUTED,
-            ).pack(pady=(4, 0))
+            ).pack(pady=(6, 0))
             self._brand_preview_widgets[brand] = canvas
 
-        self._load_brand_previews_async(by_brand)
+        # Slot "..." al final solo cuando hay marcas que no entraron.
+        if overflow:
+            ph_col = tk.Frame(thumbs_frame, bg=BG)
+            ph_col.pack(side="left", padx=(0, 12))
+            self._make_brand_thumb_placeholder(ph_col).pack()
+            tk.Label(
+                ph_col, text="...", font=FONT_CAPTION,
+                bg=BG, fg=TEXT_LIGHT,
+            ).pack(pady=(6, 0))
+
+        # Solo cargamos fotos para las marcas que efectivamente mostramos —
+        # no tiene sentido hacer I/O en Dropbox para canvases que no existen.
+        visible_by_brand = {b: by_brand[b] for b in visible_brands}
+        self._load_brand_previews_async(visible_by_brand)
+
+    def _make_brand_thumb_canvas(self, parent, brand):
+        """Crea un Canvas size x size para el thumbnail de una marca.
+        Pinta el placeholder con iniciales sobre fondo gris claro y
+        esquinas redondeadas. Cuando llega la foto real (async),
+        _apply_brand_thumbnail reemplaza el contenido."""
+        size = self._BRAND_THUMB_SIZE
+        r = self._BRAND_THUMB_RADIUS
+        canvas = tk.Canvas(
+            parent, width=size, height=size, bg=BG,
+            highlightthickness=0, bd=0,
+        )
+        self._draw_brand_thumb_placeholder(canvas, brand)
+        return canvas
+
+    def _draw_brand_thumb_placeholder(self, canvas, brand):
+        """Dibuja el contenido inicial de un thumb (sin foto aun): rounded
+        rect HOVER_BG + iniciales centradas TEXT_MUTED."""
+        canvas.delete("all")
+        size = self._BRAND_THUMB_SIZE
+        r = self._BRAND_THUMB_RADIUS
+        # Fondo redondeado.
+        _canvas_rounded_fill(canvas, 0, 0, size, size, r, HOVER_BG)
+        # Iniciales: 2 primeras letras de cada palabra, max 3 chars.
+        initials = "".join(w[0] for w in brand.split()[:2]).upper()
+        if not initials:
+            initials = brand[:3].upper()
+        initials = initials[:3]
+        canvas.create_text(
+            size / 2, size / 2,
+            text=initials, font=F(18, "bold"), fill=TEXT_MUTED,
+        )
+
+    def _make_brand_thumb_placeholder(self, parent):
+        """Crea el slot "..." al final de la fila — rounded rect con
+        border dasheado y un icono placeholder central. Mismo size que
+        un thumb real para que la fila quede pareja."""
+        size = self._BRAND_THUMB_SIZE
+        r = self._BRAND_THUMB_RADIUS
+        canvas = tk.Canvas(
+            parent, width=size, height=size, bg=BG,
+            highlightthickness=0, bd=0,
+        )
+        # Fill SURFACE (queda apenas distinto del BG general).
+        _canvas_rounded_fill(canvas, 0, 0, size, size, r, SURFACE)
+
+        # Borde dasheado rounded (mismo truco que el drop zone, escalado).
+        x1, y1, x2, y2 = 0, 0, size, size
+        dash = (2, 6)
+        line_kwargs = {"fill": BORDER, "width": 1, "dash": dash}
+        canvas.create_line(x1 + r, y1, x2 - r, y1, **line_kwargs)
+        canvas.create_line(x1 + r, y2, x2 - r, y2, **line_kwargs)
+        canvas.create_line(x1, y1 + r, x1, y2 - r, **line_kwargs)
+        canvas.create_line(x2, y1 + r, x2, y2 - r, **line_kwargs)
+        arc_kwargs = {
+            "outline": BORDER, "width": 1, "dash": dash, "style": "arc",
+        }
+        canvas.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r,
+                          start=90, extent=90, **arc_kwargs)
+        canvas.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r,
+                          start=0, extent=90, **arc_kwargs)
+        canvas.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2,
+                          start=180, extent=90, **arc_kwargs)
+        canvas.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2,
+                          start=270, extent=90, **arc_kwargs)
+
+        # Icono central placeholder de imagen.
+        canvas.create_text(
+            size / 2, size / 2, text="🖼",
+            font=F(22), fill=TEXT_LIGHT,
+        )
+        return canvas
 
     def _load_brand_previews_async(self, by_brand):
         """Carga las imágenes en thread daemon. Cuando llega cada thumbnail
@@ -1774,6 +1952,12 @@ class App:
             self._brand_thumbnail_cache = {}
         cache = self._brand_thumbnail_cache
         dbx = self.dropbox_status["root"]
+        size = self._BRAND_THUMB_SIZE
+        radius = self._BRAND_THUMB_RADIUS
+        # Color de fondo del Canvas: usamos BG asi cuando aplicamos la
+        # mascara rounded, las esquinas "fuera" del rounded rect quedan
+        # del mismo color que la pantalla y no se notan.
+        bg_hex = BG
 
         def _do():
             import finder as finder_mod
@@ -1791,10 +1975,16 @@ class App:
                     if src is None:
                         continue
                     img = Image.open(src).convert("RGB")
-                    img.thumbnail((68, 68), Image.LANCZOS)
+                    # Imagen al tamaño del thumb y cuadrada (crop center
+                    # para que las fotos rectangulares no se distorsionen).
+                    img = _square_crop(img).resize(
+                        (size, size), Image.LANCZOS,
+                    )
+                    img = _round_image_corners(img, radius, bg_hex)
                     # PhotoImage SOLO en main thread (Tk no es thread-safe).
                     self.root.after(
-                        0, lambda b=brand, im=img: self._cache_and_apply_thumb(b, im),
+                        0, lambda b=brand, im=img:
+                            self._cache_and_apply_thumb(b, im),
                     )
                 except Exception:
                     continue
@@ -1817,7 +2007,8 @@ class App:
         if canvas is None or not canvas.winfo_exists():
             return
         canvas.delete("all")
-        canvas.create_image(36, 36, image=tk_img)
+        size = self._BRAND_THUMB_SIZE
+        canvas.create_image(size / 2, size / 2, image=tk_img)
         # Guardar ref como atributo del canvas para que el GC no destruya
         # la PhotoImage antes que el canvas.
         canvas.image = tk_img
