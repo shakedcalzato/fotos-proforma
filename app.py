@@ -366,10 +366,13 @@ FONT_MONO           = ("Menlo", 12)
 WINDOW_W = 800
 WINDOW_H = 650
 
-# Tamaño minimo para que el UI no se rompa. Por debajo de esto los textos
-# largos se solapan, los botones quedan apretados, etc.
-WINDOW_W_MIN = 600
-WINDOW_H_MIN = 500
+# Tamaño minimo para que el UI no se rompa. Subido a 1100x720 (v2.0)
+# porque el layout 2-col necesita ese ancho para verse decente — debajo
+# de esto los textos largos se cortan, los chips se solapan y los
+# segmented controls quedan a la mitad. tk.minsize() impide al usuario
+# achicar mas alla de eso.
+WINDOW_W_MIN = 1100
+WINDOW_H_MIN = 720
 
 APP_VERSION = "2.0"
 
