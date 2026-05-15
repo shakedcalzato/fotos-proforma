@@ -2643,6 +2643,64 @@ class App:
 
     # ---- Dropbox status indicator (pre-flight + chip footer) ---------------
 
+    def _build_pdf_subtitle_chip(self, parent, text, parent_bg=BG):
+        """Chip pill rounded con icono 📄 + texto. Usado como subtitle
+        de pantalla 2 (en lugar de un tk.Label suelto). Pill medio:
+        fondo HOVER_BG, border subtle, padding generoso."""
+        label = f"📄  {text}"
+        font = FONT_CAPTION
+        w_text = _measure_text_width(label, font)
+        width = w_text + 28
+        height = 32
+        cv = tk.Canvas(
+            parent, width=width, height=height,
+            bg=parent_bg, highlightthickness=0, bd=0,
+        )
+        pts = _round_rect_pts(0, 0, width - 1, height - 1, height // 2)
+        cv.create_polygon(
+            pts, smooth=True, fill=HOVER_BG,
+            outline=BORDER_SUBTLE, width=1,
+        )
+        cv.create_text(
+            width / 2, height / 2, text=label,
+            fill=TEXT, font=font,
+        )
+        return cv
+
+    def _build_footer_status_left(self, parent, parent_bg=BG):
+        """Bloque 'v{VERSION} · ● Dropbox: <estado>' para el footer.
+        Se usa en las 4 pantallas (Cargar/Configurar/Procesando/Resultado)
+        para que el status sea consistente. Guarda referencias en
+        self._dbx_chip / _dbx_dot / _dbx_label — _update_dbx_chip las
+        actualiza cuando llega el status async."""
+        wrap = tk.Frame(parent, bg=parent_bg)
+        tk.Label(
+            wrap, text=f"v{APP_VERSION}",
+            font=FONT_CAPTION, bg=parent_bg, fg=TEXT_LIGHT,
+        ).pack(side="left")
+
+        chip = tk.Frame(wrap, bg=parent_bg)
+        chip.pack(side="left", padx=(14, 0))
+        dot = tk.Label(
+            chip, text="●", font=FONT_BODY, bg=parent_bg, fg=TEXT_LIGHT,
+        )
+        dot.pack(side="left")
+        lbl = tk.Label(
+            chip, text="Dropbox: chequeando…",
+            font=FONT_CAPTION, bg=parent_bg, fg=TEXT_LIGHT,
+        )
+        lbl.pack(side="left", padx=(4, 0))
+        # Click en cualquier parte del chip re-chequea.
+        for w in (chip, dot, lbl):
+            w.bind("<Button-1>", lambda _e: self._refresh_dropbox_status())
+
+        self._dbx_chip = chip
+        self._dbx_dot = dot
+        self._dbx_label = lbl
+        # Reflejar el estado actual inmediatamente (si ya hubo check).
+        self._update_dbx_chip()
+        return wrap
+
     def _refresh_dropbox_status(self, force_async=False):
         """Re-checkea Dropbox y actualiza self.dropbox_status. Si force_async,
         corre en thread daemon y actualiza el UI cuando termina. Si no,
@@ -2670,27 +2728,33 @@ class App:
         self._update_dbx_chip()
 
     def _update_dbx_chip(self):
-        """Refresca el chip del footer (pantalla 1) segun self.dropbox_status."""
-        if not (hasattr(self, "s1_dbx_label") and self.s1_dbx_label is not None
-                and self.s1_dbx_label.winfo_exists()):
-            return  # no estamos en pantalla 1
+        """Refresca el chip de Dropbox del footer (global a las 4 pantallas)
+        segun self.dropbox_status. Si el footer no esta pintado (todavia
+        no entramos a una pantalla, o algun edge case), retorna safe."""
+        lbl = getattr(self, "_dbx_label", None)
+        dot = getattr(self, "_dbx_dot", None)
+        if lbl is None or dot is None:
+            return
+        try:
+            if not lbl.winfo_exists():
+                return
+        except tk.TclError:
+            return
         status = self.dropbox_status
         if status is None:
-            self.s1_dbx_dot.configure(fg=TEXT_LIGHT)
-            self.s1_dbx_label.configure(
-                text="Dropbox: chequeando…", fg=TEXT_LIGHT,
-            )
+            dot.configure(fg=TEXT_LIGHT)
+            lbl.configure(text="Dropbox: chequeando…", fg=TEXT_LIGHT)
             return
         if status["connected"]:
-            self.s1_dbx_dot.configure(fg=SUCCESS)
+            dot.configure(fg=SUCCESS)
             n = status["brand_count"]
-            self.s1_dbx_label.configure(
+            lbl.configure(
                 text=f"Dropbox conectado · {n} marca{'s' if n != 1 else ''}",
                 fg=TEXT_MUTED,
             )
         else:
-            self.s1_dbx_dot.configure(fg=ERROR)
-            self.s1_dbx_label.configure(
+            dot.configure(fg=ERROR)
+            lbl.configure(
                 text="Dropbox no encontrado · click para reintentar",
                 fg=ERROR,
             )
@@ -3075,33 +3139,10 @@ class App:
         self._set_next_enabled(False)
         self.s1_next_btn.pack(side="right")
 
-        # Versión chiquita + indicador de Dropbox a la izquierda.
-        footer_left = tk.Frame(footer, bg=BG)
-        footer_left.pack(side="left")
-        tk.Label(
-            footer_left, text=f"v{APP_VERSION}",
-            font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT,
-        ).pack(side="left")
-
-        # Chip de Dropbox: dot de color + texto del estado. Click re-chequea.
-        self.s1_dbx_chip = tk.Frame(footer_left, bg=BG)
-        self.s1_dbx_chip.pack(side="left", padx=(14, 0))
-        self.s1_dbx_dot = tk.Label(
-            self.s1_dbx_chip, text="●", font=FONT_BODY, bg=BG, fg=TEXT_LIGHT,
-        )
-        self.s1_dbx_dot.pack(side="left")
-        self.s1_dbx_label = tk.Label(
-            self.s1_dbx_chip, text="Dropbox: chequeando…",
-            font=FONT_CAPTION, bg=BG, fg=TEXT_LIGHT,
-        )
-        self.s1_dbx_label.pack(side="left", padx=(4, 0))
-        # Click en cualquier parte del chip re-chequea (util si Dropbox
-        # terminaba de sincronizar mientras la app ya estaba abierta).
-        for w in (self.s1_dbx_chip, self.s1_dbx_dot, self.s1_dbx_label):
-            w.bind("<Button-1>", lambda _e: self._refresh_dropbox_status())
-        # Actualizar inmediatamente con el ultimo estado conocido (si ya
-        # corrimos el check al init) y disparar nuevo check en background.
-        self._update_dbx_chip()
+        # Footer status global "v{V} · Dropbox: <estado>" — mismo
+        # bloque que en pantallas 2/3/4 para consistencia.
+        self._build_footer_status_left(footer).pack(side="left")
+        # Disparar check async (el helper ya pinto el estado actual).
         self._refresh_dropbox_status(force_async=True)
 
         # Body scrolleable con layout 2-columnas (v2.0). Columna izquierda
@@ -3792,23 +3833,35 @@ class App:
         self._current_screen = 2
         if hasattr(self, "topnav"):
             self.topnav.set_active_for_screen(2)
+        # Header SIN subtitle de texto: el subtitle ahora es un chip
+        # pill con icono 📄 + nombre del PDF, pintado justo debajo.
+        self._header("Configurá la búsqueda")
         n = len(self.pdf_paths)
         if n == 1:
-            subtitle = f"PDF: {_display_name_for_path(self.pdf_paths[0])}"
+            chip_text = _display_name_for_path(self.pdf_paths[0])
         elif n > 1:
-            subtitle = f"{n} proformas · misma configuración para todas"
+            chip_text = f"{n} proformas · misma configuración"
         else:
-            subtitle = ""
-        self._header("Configurá la búsqueda", subtitle)
+            chip_text = None
+        if chip_text:
+            sub_wrap = tk.Frame(self.container, bg=BG)
+            sub_wrap.pack(anchor="w", fill="x", padx=SCREEN_PADX, pady=(0, 14))
+            self._build_pdf_subtitle_chip(sub_wrap, chip_text) \
+                .pack(anchor="w")
 
         # Footer primero
         footer = tk.Frame(self.container, bg=BG)
         footer.pack(side="bottom", fill="x", padx=SCREEN_PADX, pady=24)
 
+        # Volver + status Dropbox agrupados a la izquierda.
+        left_zone = tk.Frame(footer, bg=BG)
+        left_zone.pack(side="left")
         CanvasButton(
-            footer, text="←  Volver",
+            left_zone, text="←  Volver",
             command=lambda: self._goto(self.show_screen1), kind="secondary",
         ).pack(side="left")
+        self._build_footer_status_left(left_zone) \
+            .pack(side="left", padx=(20, 0))
 
         CanvasButton(
             footer, text="Procesar  →",
@@ -3963,12 +4016,22 @@ class App:
             wraplength=240, justify="left",
         )
         self.s2_dest_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        CanvasButton(
-            dest_row, text="Cambiar...",
-            command=self._on_pick_dest_root,
-            kind="secondary", padx=14, height=32, font=FONT_CAPTION,
-            parent_bg=SURFACE,
-        ).pack(side="right")
+        # "Cambiar" como link de texto azul (no botón con border) —
+        # estilo Stitch. Hover oscurece levemente para feedback.
+        change_link = tk.Label(
+            dest_row, text="Cambiar",
+            font=F(13, "bold"), bg=SURFACE, fg=ACCENT,
+        )
+        change_link.pack(side="right", padx=(0, 4))
+        change_link.bind(
+            "<Button-1>", lambda _e: self._on_pick_dest_root(),
+        )
+        change_link.bind(
+            "<Enter>", lambda _e, l=change_link: l.configure(fg=ACCENT_HOVER),
+        )
+        change_link.bind(
+            "<Leave>", lambda _e, l=change_link: l.configure(fg=ACCENT),
+        )
 
         # Activar mousewheel scroll en todos los descendientes del body
         self._bind_scroll_wheel_to_descendants(body)
@@ -4206,6 +4269,12 @@ class App:
             "Procesando",
             "Buscando fotos en Dropbox y copiando al escritorio.",
         )
+
+        # Footer status (mismo bloque que pantalla 1) — solo el status,
+        # sin botones (el Cancelar vive adentro del body).
+        footer = tk.Frame(self.container, bg=BG)
+        footer.pack(side="bottom", fill="x", padx=SCREEN_PADX, pady=24)
+        self._build_footer_status_left(footer).pack(side="left")
 
         body = tk.Frame(self.container, bg=BG)
         body.pack(fill="both", expand=True, padx=SCREEN_PADX, pady=(0, 20))
@@ -4524,10 +4593,15 @@ class App:
         footer = tk.Frame(self.container, bg=BG)
         footer.pack(side="bottom", fill="x", padx=SCREEN_PADX, pady=24)
 
+        # Volver + status Dropbox agrupados a la izquierda.
+        left_zone = tk.Frame(footer, bg=BG)
+        left_zone.pack(side="left")
         CanvasButton(
-            footer, text="←  Volver",
+            left_zone, text="←  Volver",
             command=lambda: self._goto(self._back_to_filters), kind="secondary",
         ).pack(side="left")
+        self._build_footer_status_left(left_zone) \
+            .pack(side="left", padx=(20, 0))
 
         CanvasButton(
             footer, text="Abrir carpeta  →",
@@ -4678,10 +4752,15 @@ class App:
         # Footer
         footer = tk.Frame(self.container, bg=BG)
         footer.pack(side="bottom", fill="x", padx=SCREEN_PADX, pady=24)
+        # Volver + status Dropbox agrupados a la izquierda.
+        left_zone = tk.Frame(footer, bg=BG)
+        left_zone.pack(side="left")
         CanvasButton(
-            footer, text="←  Volver",
+            left_zone, text="←  Volver",
             command=lambda: self._goto(self._back_to_filters), kind="secondary",
         ).pack(side="left")
+        self._build_footer_status_left(left_zone) \
+            .pack(side="left", padx=(20, 0))
         CanvasButton(
             footer, text="Abrir todas  →",
             command=self._open_all_dests, kind="primary",
