@@ -4482,25 +4482,26 @@ class App:
         total = self.result["total_skus"]
         dest = self.result["dest"]
 
+        # Titulo unico "¡Listo!" siempre — la info contextual de cuantas
+        # faltaron va en el subtitulo y en las stats cards, no en el H1.
+        title = "¡Listo!"
         if missing:
-            title = "¡Listo, con algunas faltantes!"
             subtitle = f"{copied} fotos copiadas, {len(missing)} no encontradas."
         else:
-            title = "¡Listo!"
             subtitle = f"{copied} fotos copiadas. Todas encontradas."
 
-        # Header personalizado v2.0: check icono grande circular + titulo
-        # a su derecha. Azul si todo OK, naranja si hay faltantes.
+        # Header personalizado v2.0: check icono grande circular AZUL
+        # (ACCENT) + titulo a su derecha. Stitch usa azul siempre, sin
+        # variar segun resultado.
         header_wrap = tk.Frame(self.container, bg=BG)
         header_wrap.pack(fill="x", pady=(22, 14), padx=SCREEN_PADX)
-        check_color = ACCENT if not missing else "#E07B00"  # azul / naranja
         check_canvas = tk.Canvas(
             header_wrap, width=48, height=48, bg=BG,
             highlightthickness=0, bd=0,
         )
         check_canvas.pack(side="left", padx=(0, 14))
         check_canvas.create_oval(
-            2, 2, 46, 46, fill=check_color, outline="",
+            2, 2, 46, 46, fill=ACCENT, outline="",
         )
         check_canvas.create_text(
             24, 24, text="✓", fill="#FFFFFF", font=F(22, "bold"),
@@ -4609,7 +4610,7 @@ class App:
         dest_lbl.pack(anchor="w", fill="x", pady=(4, 0))
         _bind_dynamic_wraplength(dest_lbl, margin=8)
 
-        # ===== CARD FALTANTES COMO TABLA =====
+        # ===== CARD FALTANTES (o estado "todo OK") =====
         if missing:
             mc = Card(body)
             mc.pack(fill="both", expand=True)
@@ -4637,6 +4638,27 @@ class App:
 
             # Tabla con header de columnas.
             self._build_missing_table(mi, sorted_missing)
+        else:
+            # Sin faltantes: card chica con mensaje positivo en verde.
+            # Antes la seccion se omitia entirely, lo cual dejaba el body
+            # vacio debajo de las stats — visualmente poco satisfactorio.
+            ok_card = Card(body)
+            ok_card.pack(fill="x")
+            okf = tk.Frame(ok_card, bg=SURFACE)
+            okf.pack(padx=20, pady=16, fill="x")
+            ok_canvas = tk.Canvas(
+                okf, width=28, height=28, bg=SURFACE,
+                highlightthickness=0, bd=0,
+            )
+            ok_canvas.pack(side="left", padx=(0, 12))
+            ok_canvas.create_oval(0, 0, 28, 28, fill=SUCCESS, outline="")
+            ok_canvas.create_text(
+                14, 14, text="✓", fill="#FFFFFF", font=F(14, "bold"),
+            )
+            tk.Label(
+                okf, text="Todas las fotos encontradas",
+                font=FONT_BODY_BOLD, bg=SURFACE, fg=SUCCESS, anchor="w",
+            ).pack(side="left")
 
     def _render_screen3_batch(self):
         """Pantalla 3 cuando se procesaron varias proformas (batch)."""
