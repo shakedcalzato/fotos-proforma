@@ -1107,81 +1107,202 @@ class OptionCard(tk.Frame):
 # =============================================================================
 
 class SegmentedControl(tk.Frame):
-    """Selector horizontal con varias opciones. La seleccionada queda azul,
-    las demás blancas con borde gris."""
+    """Selector horizontal estilo iOS-segmented: un track gris claro
+    contiene N pills. El seleccionado tiene fondo blanco + border
+    sutil (mimica de shadow) + texto azul oscuro bold. Los demas
+    quedan transparentes sobre el track, con texto gris medio.
 
-    def __init__(self, parent, var, options, height=44):
-        super().__init__(parent, bg=BG)
+    Implementacion: un unico Canvas que pinta todo (track + pills +
+    texto). El hit-test del click se hace por coordenadas en el
+    handler — no necesitamos Canvases hijos por segment."""
+
+    def __init__(self, parent, var, options, height=40):
+        # bg del frame externo = bg del parent (para que se mezcle).
+        try:
+            parent_bg = parent.cget("bg")
+        except tk.TclError:
+            parent_bg = BG
+        super().__init__(parent, bg=parent_bg)
         self.var = var
         self.options = options  # list of (value, label)
         self.height = height
-        self._segments = []
+        self._parent_bg = parent_bg
 
-        for i, (value, label) in enumerate(options):
-            seg = tk.Canvas(
-                self, height=height,
-                bg=BG, highlightthickness=0, bd=0,
-            )
-            w_text = _measure_text_width(label, FONT_BUTTON)
-            seg_w = max(120, w_text + 32)
-            seg.configure(width=seg_w)
-            seg.pack(side="left", padx=(0 if i == 0 else 6, 0))
-            seg._value = value
-            seg._label = label
-            seg._width = seg_w   # NO usar _w (atributo interno tkinter)
-            seg._hover = False
-            seg.bind("<Button-1>", lambda e, v=value: self.var.set(v))
-            seg.bind("<Enter>", lambda e, s=seg: self._on_hover(s, True))
-            seg.bind("<Leave>", lambda e, s=seg: self._on_hover(s, False))
-            self._segments.append(seg)
+        # Calcular ancho de cada segment segun el ancho del texto.
+        font_sel = F(13, "bold")
+        self._seg_widths = []
+        for _value, label in options:
+            w_text = _measure_text_width(label, font_sel)
+            self._seg_widths.append(max(110, w_text + 36))
+
+        pad = 3   # margen interno entre track y pill seleccionado
+        total_w = sum(self._seg_widths) + 2 * pad
+        self._pad = pad
+        self._total_w = total_w
+
+        # Un solo Canvas que dibuja todo.
+        self._canvas = tk.Canvas(
+            self, width=total_w, height=height,
+            bg=parent_bg, highlightthickness=0, bd=0,
+        )
+        self._canvas.pack(anchor="w")
+        self._canvas.bind("<Button-1>", self._on_click)
 
         var.trace_add("write", lambda *a: self._render())
         self._render()
 
-    def _on_hover(self, seg, hovering):
-        seg._hover = hovering
-        self._draw_seg(seg)
+    def _on_click(self, event):
+        """Hit-test por x: caemos en el segment correspondiente y
+        seteamos el var. Tolera clicks fuera (no hace nada)."""
+        x = event.x
+        seg_x = self._pad
+        for i, sw in enumerate(self._seg_widths):
+            if seg_x <= x <= seg_x + sw:
+                self.var.set(self.options[i][0])
+                return
+            seg_x += sw
 
     def _render(self):
-        # Mismo guard que OptionCard: el trace al StringVar sobrevive al
-        # destroy del widget. Si volves a pantalla 2 los SegmentedControl
-        # viejos estan destruidos pero su trace sigue activo en el var.
+        # Guard: el trace al StringVar sobrevive al destroy del widget.
         try:
-            if not self.winfo_exists():
+            if not self._canvas.winfo_exists():
                 return
         except tk.TclError:
             return
-        for seg in self._segments:
+        c = self._canvas
+        c.delete("all")
+        h = self.height
+        tw = self._total_w
+        pad = self._pad
+
+        # 1) Track gris claro rounded — fondo de toda la banda.
+        track_pts = _round_rect_pts(0, 0, tw, h, h / 2)
+        c.create_polygon(
+            track_pts, smooth=True, fill=HOVER_BG, outline="",
+        )
+
+        # 2) Por cada opcion: pill blanco si selected, texto encima.
+        x = pad
+        for i, (value, label) in enumerate(self.options):
+            sw = self._seg_widths[i]
+            selected = (self.var.get() == value)
+            if selected:
+                pill_h = h - 2 * pad
+                pill_pts = _round_rect_pts(
+                    x, pad, x + sw, pad + pill_h, pill_h / 2,
+                )
+                # "Sombra": border BORDER_SUBTLE 1px (no es shadow real
+                # pero da el efecto en tk classic donde no hay drop shadow).
+                c.create_polygon(
+                    pill_pts, smooth=True, fill=SURFACE,
+                    outline=BORDER_SUBTLE, width=1,
+                )
+                fg = ACCENT
+                font = F(13, "bold")
+            else:
+                fg = TEXT_MUTED
+                font = F(13)
+            c.create_text(
+                x + sw / 2, h / 2,
+                text=label, fill=fg, font=font,
+            )
+            x += sw
+
+
+# =============================================================================
+# DashedCard - card con border dasheado azul (Stitch sub-section)
+# =============================================================================
+
+class DashedCard(tk.Frame):
+    """Card con borde dasheado azul redondeado y fondo SURFACE blanco.
+    Usado para sub-secciones tipo 'Si la referencia no tiene foto
+    individual' donde Stitch muestra un look 'sub-card' visualmente
+    distinto del Card normal con border solido.
+
+    Estructura: Canvas exterior dibuja el border + un Frame `content`
+    adentro via create_window donde el caller mete widgets. Width sigue
+    al parent (fill="x"); height crece segun el contenido."""
+
+    def __init__(self, parent, **kwargs):
+        try:
+            parent_bg = parent.cget("bg")
+        except tk.TclError:
+            parent_bg = BG
+        super().__init__(parent, bg=parent_bg)
+        self._parent_bg = parent_bg
+
+        # Canvas que dibuja el border dasheado.
+        self._canvas = tk.Canvas(
+            self, bg=parent_bg, highlightthickness=0, bd=0,
+        )
+        self._canvas.pack(fill="both", expand=True)
+
+        # Frame interior con bg SURFACE donde el caller packea widgets.
+        # `_pad` es el margen entre el border y el content.
+        self._pad = 6
+        self.content = tk.Frame(self._canvas, bg=SURFACE)
+        self._win_id = self._canvas.create_window(
+            (self._pad, self._pad), window=self.content, anchor="nw",
+        )
+
+        # Cuando el contenido cambia de tamaño, ajustamos la altura del
+        # canvas. Cuando el canvas cambia de ancho (fill='x'), ajustamos
+        # el ancho del content y redibujamos el border.
+        self.content.bind("<Configure>", self._on_content_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+
+    def _on_content_configure(self, _e):
+        try:
+            h = self.content.winfo_reqheight() + 2 * self._pad
+            self._canvas.configure(height=h)
+        except tk.TclError:
+            pass
+
+    def _on_canvas_configure(self, _e):
+        cw = self._canvas.winfo_width()
+        if cw > 1:
             try:
-                if seg.winfo_exists():
-                    self._draw_seg(seg)
+                self._canvas.itemconfig(
+                    self._win_id, width=cw - 2 * self._pad,
+                )
             except tk.TclError:
                 pass
+        self._redraw_border()
 
-    def _draw_seg(self, seg):
-        seg.delete("all")
-        selected = (self.var.get() == seg._value)
-        if selected:
-            bg = ACCENT
-            fg = "#FFFFFF"
-            border = ACCENT
-        elif seg._hover:
-            bg = HOVER_BG
-            fg = TEXT
-            border = BORDER_STRONG
-        else:
-            bg = SURFACE
-            fg = TEXT
-            border = BORDER
-        pts = _round_rect_pts(1, 1, seg._width - 1, self.height - 1, 10)
-        seg.create_polygon(
-            pts, smooth=True, fill=bg,
-            outline=border, width=1,
-        )
-        seg.create_text(
-            seg._width / 2, self.height / 2,
-            text=seg._label, fill=fg, font=FONT_BUTTON,
-        )
+    def _redraw_border(self):
+        c = self._canvas
+        try:
+            c.delete("border")
+        except tk.TclError:
+            return
+        cw = c.winfo_width()
+        ch = c.winfo_height()
+        if cw <= 1 or ch <= 1:
+            return
+        radius = 14
+        margin = 2
+        x1, y1 = margin, margin
+        x2, y2 = cw - margin, ch - margin
+        r = radius
+        # Dash espaciado, color ACCENT, 1.5px equivalente (tk acepta int
+        # mejor que float; usamos 2 que se ve nítido).
+        dash = (3, 4)
+        bw = 2
+        lk = {"fill": ACCENT, "width": bw, "dash": dash, "tags": "border"}
+        ak = {"outline": ACCENT, "width": bw, "dash": dash,
+              "style": "arc", "tags": "border"}
+        c.create_line(x1 + r, y1, x2 - r, y1, **lk)
+        c.create_line(x1 + r, y2, x2 - r, y2, **lk)
+        c.create_line(x1, y1 + r, x1, y2 - r, **lk)
+        c.create_line(x2, y1 + r, x2, y2 - r, **lk)
+        c.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r,
+                     start=90, extent=90, **ak)
+        c.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r,
+                     start=0, extent=90, **ak)
+        c.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2,
+                     start=180, extent=90, **ak)
+        c.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2,
+                     start=270, extent=90, **ak)
 
 
 # =============================================================================
@@ -1771,10 +1892,10 @@ class App:
         should_show = (self.modo_var.get() == "complete")
         already_shown = bool(sec.winfo_manager())
         if should_show and not already_shown:
-            # Se packea ARRIBA del right_col (before del primer widget que
-            # ya estaba — la card "Tamaño de las fotos"). Si no encontramos
-            # un sibling, simplemente pack al final.
-            parent = sec.master.master  # Card._wrapper.master = right_col
+            # Se packea ARRIBA del right_col (before del primer widget
+            # que ya estaba — la card "Tamaño de las fotos"). Si no
+            # encontramos un sibling, simplemente pack al final.
+            parent = getattr(self, "s2_right_col", None)
             siblings = parent.pack_slaves() if parent else []
             if siblings:
                 sec.pack(fill="x", pady=(0, ELEMENT_GAP), before=siblings[0])
@@ -3722,16 +3843,21 @@ class App:
         # ===== COL DER: 2 cards apiladas =====
         right_col = tk.Frame(grid_wrap, bg=BG)
         right_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        # Guardamos referencia para _refresh_no_ind_visibility (que ya
+        # no puede usar `sec.master.master` porque DashedCard no usa
+        # wrapper como Card).
+        self.s2_right_col = right_col
 
-        # --- Card "Si la referencia no tiene foto individual" ---
-        # Se muestra/oculta segun modo_var.
-        self.s2_no_ind_section = Card(right_col)
+        # --- Sub-card "Si la referencia no tiene foto individual" ---
+        # Border dasheado azul (DashedCard, no Card normal). Se muestra/
+        # oculta segun modo_var via _refresh_no_ind_visibility.
+        self.s2_no_ind_section = DashedCard(right_col)
         # NO la packeamos aca — _refresh_no_ind_visibility decide.
-        no_ind_inner = tk.Frame(self.s2_no_ind_section, bg=SURFACE)
-        no_ind_inner.pack(padx=20, pady=18, fill="both", expand=True)
+        no_ind_inner = tk.Frame(self.s2_no_ind_section.content, bg=SURFACE)
+        no_ind_inner.pack(padx=16, pady=16, fill="both", expand=True)
         tk.Label(
-            no_ind_inner, text="Si la referencia no tiene foto individual",
-            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
+            no_ind_inner, text="Si la referencia no tiene foto individual:",
+            font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED, anchor="w",
             wraplength=300, justify="left",
         ).pack(anchor="w", pady=(0, 10))
         SegmentedControl(
