@@ -1806,31 +1806,14 @@ class App:
         ).pack(side="right")
 
         # ----- Fila de thumbnails -----
-        wrap = tk.Frame(parent, bg=BG)
-        wrap.pack(fill="x", pady=(0, SECTION_GAP))
-
-        # Calculamos altura del Canvas wrapper: thumb_size + pad + label.
-        size = self._BRAND_THUMB_SIZE
-        h_total = size + 6 + 18 + 8  # thumb + gap + caption + bottom pad
-        thumbs_canvas = tk.Canvas(
-            wrap, bg=BG, highlightthickness=0, bd=0,
-            height=h_total,
-        )
-        hbar = tk.Scrollbar(
-            wrap, orient="horizontal", command=thumbs_canvas.xview,
-        )
-        thumbs_canvas.configure(xscrollcommand=hbar.set)
-        thumbs_canvas.pack(side="top", fill="x")
-        # Scrollbar solo si hay demasiadas marcas. Lo packeamos siempre;
-        # cuando todo entra, el scroll no hace nada.
-        hbar.pack(side="bottom", fill="x")
-
-        thumbs_frame = tk.Frame(thumbs_canvas, bg=BG)
-        thumbs_canvas.create_window((0, 0), window=thumbs_frame, anchor="nw")
-
-        def _on_thumbs_configure(_e):
-            thumbs_canvas.configure(scrollregion=thumbs_canvas.bbox("all"))
-        thumbs_frame.bind("<Configure>", _on_thumbs_configure)
+        # Antes esto era un Canvas con scrollbar horizontal anidado dentro
+        # del scroll vertical del body — combinacion fragil que causaba
+        # que la seccion desapareciera al scrollear (focus/scrollregion
+        # conflicts entre canvases anidados). Como limitamos a 7 slots
+        # con un "..." al final cuando hay overflow, el scroll horizontal
+        # nunca era necesario. Ahora es un Frame plano.
+        thumbs_frame = tk.Frame(parent, bg=BG)
+        thumbs_frame.pack(anchor="w", fill="x", pady=(0, SECTION_GAP))
 
         # Slots visibles maximos en la fila. Si hay mas marcas que esto,
         # el ultimo slot se reemplaza por un placeholder "..." dasheado
@@ -3760,13 +3743,25 @@ class App:
                     font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
                 ).pack(anchor="w", pady=(6, 0))
             else:
-                # Una sección por PDF / lista
-                for entry in ok_entries:
+                # Multi-PDF: cada proforma en su propio bloque, separado por
+                # un hairline para que la jerarquia (nombre PDF | entry con
+                # nombre de carpeta) sea legible aunque haya 3-4 entries.
+                tk.Label(
+                    name_inner,
+                    text="Una carpeta por proforma. Editá cada nombre si querés.",
+                    font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+                ).pack(anchor="w", pady=(0, 10))
+                for i, entry in enumerate(ok_entries):
+                    if i > 0:
+                        tk.Frame(name_inner, bg=BORDER_SUBTLE, height=1) \
+                            .pack(fill="x", pady=10)
                     row = tk.Frame(name_inner, bg=SURFACE)
-                    row.pack(fill="x", pady=(0, 10))
+                    row.pack(fill="x")
                     tk.Label(
-                        row, text=_display_name_for_path(entry["path"]),
-                        font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+                        row,
+                        text=_display_name_for_path(entry["path"]).upper(),
+                        font=FONT_SECTION_LABEL, bg=SURFACE,
+                        fg=TEXT_LIGHT, anchor="w",
                     ).pack(anchor="w", pady=(0, 4))
                     var = self._get_or_create_override_var(entry)
                     self._make_name_entry(row, var)
