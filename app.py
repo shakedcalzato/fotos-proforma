@@ -706,18 +706,53 @@ class DropZone(tk.Canvas):
             title = "Arrastrá tu proforma PDF o hacé click para elegirla"
             sub = "Tamaño máximo: 25MB"
 
-        # Rectangulo con fondo + 4 lineas dashed encima como "borde".
+        # ----- Rounded rect dasheado (Stitch-style) -----
+        # tk.Canvas no tiene rounded-rect nativo: dibujamos el fill
+        # combinando 2 rectangulos cruzados + 4 ovalos en las esquinas,
+        # y encima el borde dasheado con 4 lineas rectas + 4 arcos.
+        # Radius 14 y dash (2, 6) replican el aspecto Stitch — fino y
+        # bien espaciado en vez del (5, 4) denso que teniamos antes.
         pad = 6
-        self.create_rectangle(
-            pad, pad, w - pad, h - pad,
-            outline="", fill=fill_color,
-        )
-        dash = (5, 4)
-        line_kwargs = {"fill": border_color, "width": 2, "dash": dash}
-        self.create_line(pad, pad, w - pad, pad, **line_kwargs)
-        self.create_line(pad, h - pad, w - pad, h - pad, **line_kwargs)
-        self.create_line(pad, pad, pad, h - pad, **line_kwargs)
-        self.create_line(w - pad, pad, w - pad, h - pad, **line_kwargs)
+        radius = 14
+        x1, y1 = pad, pad
+        x2, y2 = w - pad, h - pad
+        r = radius
+
+        # Fill: 2 rectangulos cruzados (sacando las 4 esquinas) + 4
+        # ovalos del tamaño 2r para redondear.
+        self.create_rectangle(x1 + r, y1, x2 - r, y2,
+                              fill=fill_color, outline="")
+        self.create_rectangle(x1, y1 + r, x2, y2 - r,
+                              fill=fill_color, outline="")
+        self.create_oval(x1, y1, x1 + 2 * r, y1 + 2 * r,
+                         fill=fill_color, outline="")
+        self.create_oval(x2 - 2 * r, y1, x2, y1 + 2 * r,
+                         fill=fill_color, outline="")
+        self.create_oval(x1, y2 - 2 * r, x1 + 2 * r, y2,
+                         fill=fill_color, outline="")
+        self.create_oval(x2 - 2 * r, y2 - 2 * r, x2, y2,
+                         fill=fill_color, outline="")
+
+        # Borde dasheado: 4 lineas rectas (sin entrar en las esquinas)
+        # + 4 arcos de 90° (style='arc' para que sean solo contorno).
+        dash = (2, 6)
+        bw = 1
+        line_kwargs = {"fill": border_color, "width": bw, "dash": dash}
+        self.create_line(x1 + r, y1, x2 - r, y1, **line_kwargs)  # top
+        self.create_line(x1 + r, y2, x2 - r, y2, **line_kwargs)  # bottom
+        self.create_line(x1, y1 + r, x1, y2 - r, **line_kwargs)  # left
+        self.create_line(x2, y1 + r, x2, y2 - r, **line_kwargs)  # right
+
+        arc_kwargs = {"outline": border_color, "width": bw,
+                      "dash": dash, "style": "arc"}
+        self.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r,
+                        start=90, extent=90, **arc_kwargs)
+        self.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r,
+                        start=0, extent=90, **arc_kwargs)
+        self.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2,
+                        start=180, extent=90, **arc_kwargs)
+        self.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2,
+                        start=270, extent=90, **arc_kwargs)
 
         # Circulo azul claro central con icono adentro.
         cx = w / 2
@@ -1116,14 +1151,45 @@ class TopNavBar(tk.Frame):
         ).pack(side="left")
 
         # ----- Iconos derecha -----
+        # Help "?" y avatar, cada uno dentro de un círculo con border
+        # sutil — replica de Material Symbols (account_circle / help)
+        # del rediseño Stitch. Por ahora son decorativos: el avatar
+        # podría abrir un menu de usuario y el "?" una ayuda, pero la
+        # app todavia no tiene esos flujos.
         right = tk.Frame(self, bg=SURFACE)
         right.pack(side="right", padx=20)
-        for icon in ("？",):  # solo help por ahora
-            lbl = tk.Label(
-                right, text=icon, font=F(14),
-                bg=SURFACE, fg=TEXT_LIGHT, padx=8,
-            )
-            lbl.pack(side="left")
+
+        # "?" — texto bold, vertical-baseline ajustado +1px para que
+        # el signo quede ópticamente centrado dentro del círculo (los
+        # caracteres con descender alto necesitan offset minimo).
+        help_cv = tk.Canvas(
+            right, width=32, height=32,
+            bg=SURFACE, highlightthickness=0, bd=0,
+        )
+        help_cv.create_oval(
+            2, 2, 30, 30,
+            fill=SURFACE, outline=BORDER_SUBTLE, width=1,
+        )
+        help_cv.create_text(
+            16, 17, text="?", font=F(15, "bold"), fill=TEXT_MUTED,
+        )
+        help_cv.pack(side="left", padx=(0, 8))
+
+        # Avatar — emoji de silueta. En mac/Win tk renderiza con
+        # Apple Color Emoji / Segoe UI Emoji, asi que no respeta fill
+        # pero queda OK en gris natural del glifo.
+        av_cv = tk.Canvas(
+            right, width=32, height=32,
+            bg=SURFACE, highlightthickness=0, bd=0,
+        )
+        av_cv.create_oval(
+            2, 2, 30, 30,
+            fill=SURFACE, outline=BORDER_SUBTLE, width=1,
+        )
+        av_cv.create_text(
+            16, 17, text="👤", font=F(14), fill=TEXT_MUTED,
+        )
+        av_cv.pack(side="left")
 
         # ----- Tabs centro -----
         # fill="y" para que el center y los tabs tomen los 56px de alto del
@@ -2562,6 +2628,54 @@ class App:
                 _bind(child)
         _bind(parent)
 
+    def _build_feature_card(self, parent, glyph, title, subtitle):
+        """Card chica con icono circular amarillo + titulo + subtitulo.
+        Usada en pantalla 1 abajo de la card principal — replica los
+        2 features informativos del rediseño Stitch ('Procesamiento
+        Rápido' / 'Sincronización Total').
+
+        Devuelve la Card sin packear/gridear, para que el caller la
+        ubique con el geometry manager que quiera (en show_screen1
+        las gridea en una fila de 2 columnas).
+        """
+        card = Card(parent)
+        inner = tk.Frame(card, bg=SURFACE)
+        inner.pack(padx=14, pady=12, fill="both", expand=True)
+
+        row = tk.Frame(inner, bg=SURFACE)
+        row.pack(fill="x")
+
+        # Icono circular amarillo pastel con glyph dorado. Si el glyph
+        # es un emoji (ej '⚡'), la fuente Apple Color Emoji / Segoe UI
+        # Emoji lo dibuja con su color nativo y el `fill` se ignora —
+        # eso es deseable: el rayo emoji ya sale amarillo.
+        icon_cv = tk.Canvas(
+            row, width=36, height=36, bg=SURFACE,
+            highlightthickness=0, bd=0,
+        )
+        icon_cv.create_oval(0, 0, 36, 36, fill="#FEF6D3", outline="")
+        icon_cv.create_text(
+            18, 19, text=glyph, font=F(17, "bold"), fill=GOLD,
+        )
+        icon_cv.pack(side="left", padx=(0, 12))
+
+        txt = tk.Frame(row, bg=SURFACE)
+        txt.pack(side="left", fill="both", expand=True)
+        tk.Label(
+            txt, text=title, font=FONT_BODY_BOLD,
+            bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        sub = tk.Label(
+            txt, text=subtitle, font=FONT_OPTION_SUB,
+            bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            justify="left", wraplength=180,
+        )
+        sub.pack(anchor="w", pady=(2, 0), fill="x")
+        # Wrap dinamico: cuando la columna se angosta, el subtitulo
+        # respeta el ancho disponible en vez de empujar la card.
+        _bind_dynamic_wraplength(sub, margin=8)
+        return card
+
     def _format_dest_path(self, path):
         """Formatea un path para mostrar: '~' si esta bajo home, truncado al
         final si es muy largo."""
@@ -2653,11 +2767,14 @@ class App:
 
         # Wrapper de 2 columnas: izq mas ancha (peso 3), der mas estrecha
         # (peso 2). Si la ventana es chica, el grid colapsa naturalmente.
+        # Row 0 = card principal izq | card resumen der (rowspan=2).
+        # Row 1 = fila de 2 feature cards (solo en columna izq).
         grid_wrap = tk.Frame(body, bg=BG)
         grid_wrap.pack(fill="both", expand=True, pady=(0, ELEMENT_GAP))
         grid_wrap.grid_columnconfigure(0, weight=3, uniform="cols")
         grid_wrap.grid_columnconfigure(1, weight=2, uniform="cols")
-        grid_wrap.grid_rowconfigure(0, weight=1)
+        grid_wrap.grid_rowconfigure(0, weight=0)
+        grid_wrap.grid_rowconfigure(1, weight=0)
 
         # ===== COLUMNA IZQUIERDA: drop + carga =====
         self.s1_card = Card(grid_wrap)
@@ -2709,9 +2826,43 @@ class App:
         self.s1_pick_btn_row.pack(anchor="w", pady=(4, 0))
         self._render_s1_pick_buttons()
 
+        # ===== FEATURE CARDS (debajo de la card izq) =====
+        # Dos cards informativas que viven en la columna izquierda, fila
+        # de abajo. Son decorativas (no hay click handler) — solo
+        # comunican beneficios al usuario en el primer contacto con la
+        # pantalla, igual que en el rediseño Stitch.
+        features_row = tk.Frame(grid_wrap, bg=BG)
+        features_row.grid(
+            row=1, column=0, sticky="ew",
+            padx=(0, 8), pady=(12, 0),
+        )
+        features_row.grid_columnconfigure(0, weight=1, uniform="features")
+        features_row.grid_columnconfigure(1, weight=1, uniform="features")
+
+        f1 = self._build_feature_card(
+            features_row, glyph="⚡",
+            title="Procesamiento Rápido",
+            subtitle="Las proformas se analizan en menos de 5 segundos.",
+        )
+        f1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        # '⟳' (U+27F3) es text-style, no emoji, asi que toma el fill
+        # dorado de _build_feature_card.
+        f2 = self._build_feature_card(
+            features_row, glyph="⟳",
+            title="Sincronización Total",
+            subtitle="Conexión directa con tu repositorio de Dropbox.",
+        )
+        f2.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
         # ===== COLUMNA DERECHA: resumen de carga =====
+        # rowspan=2 para que la card der cubra la altura total de la
+        # izquierda (card principal + fila de features).
         self.s1_info_card = Card(grid_wrap)
-        self.s1_info_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.s1_info_card.grid(
+            row=0, column=1, rowspan=2,
+            sticky="nsew", padx=(8, 0),
+        )
 
         # _render_s1_info se encarga de llenar la card derecha (con empty
         # state si no hay archivos, o con info de los PDFs cargados).
@@ -3030,7 +3181,21 @@ class App:
             self._load_pdf_paths(pdfs)
 
     def _render_s1_info(self):
-        # Limpiar la card derecha (es siempre la misma Card en grid).
+        """Renderiza la card derecha 'Resumen de Carga' de pantalla 1.
+
+        Misma estructura siempre (sea con o sin PDFs cargados):
+        - header con icono circular azul + titulo
+        - seccion ARCHIVOS CARGADOS (lista de archivos o placeholder)
+        - separador hairline
+        - seccion DESGLOSE POR MARCA (lista o placeholder)
+        - footer 'Total Detectado:' en fondo gris claro, pegado abajo
+
+        Cuando NO hay PDFs, ambas secciones muestran placeholders
+        tenues y el total dice '—'. Esto sustituye los antiguos
+        _render_s1_empty_state / _render_s1_single_info /
+        _render_s1_batch_info, que tenian diseños distintos para cada
+        caso — el rediseño Stitch los unifica.
+        """
         if not (hasattr(self, "s1_info_card") and self.s1_info_card is not None
                 and self.s1_info_card.winfo_exists()):
             return
@@ -3040,119 +3205,78 @@ class App:
         # Re-render botones primarios (etiqueta cambia segun estado).
         self._render_s1_pick_buttons()
 
-        if not self.parsed_data_list:
+        has_files = bool(self.parsed_data_list)
+
+        # Path label (arriba de la card izquierda) — refleja el estado.
+        if not has_files:
             self.s1_path_label.configure(
                 text="Empezá soltando una proforma o eligiendo un archivo.",
                 fg=TEXT_LIGHT,
             )
-            self._render_s1_empty_state()
-            self._set_next_enabled(False)
-            return
-
-        # Actualizar el path label segun cuantos PDFs hay
-        n = len(self.parsed_data_list)
-        if n == 1:
+        elif len(self.parsed_data_list) == 1:
             self.s1_path_label.configure(
                 text=_display_name_for_path(self.pdf_paths[0]), fg=TEXT,
             )
         else:
-            self.s1_path_label.configure(text=f"{n} proformas seleccionadas", fg=TEXT)
+            n = len(self.parsed_data_list)
+            self.s1_path_label.configure(
+                text=f"{n} proformas seleccionadas", fg=TEXT,
+            )
 
-        # Si hay >1 PDFs, mostrar resumen de la lista; si hay 1, mostrar detalle
-        # (mismo formato que antes).
-        if n == 1:
-            self._render_s1_single_info()
+        self._build_s1_info_card_content(has_files)
+
+        # Boton siguiente: habilitado si hay al menos 1 PDF parseado OK.
+        if has_files:
+            ok = any("parsed" in e for e in self.parsed_data_list)
+            self._set_next_enabled(ok)
         else:
-            self._render_s1_batch_info()
+            self._set_next_enabled(False)
 
-        # Boton siguiente: habilitado si hay al menos 1 PDF parseado OK
-        ok = any("parsed" in e for e in self.parsed_data_list)
-        self._set_next_enabled(ok)
-
-        # Re-bindear scroll wheel a los hijos nuevos de s1_info_card —
-        # el body scrolleable necesita que cada descendiente tenga el
-        # handler para que el scroll wheel funcione hovereando cualquier
-        # parte. _bind_scroll_wheel_to_descendants ya hace recursion.
+        # Re-bindear scroll wheel a los hijos nuevos.
         self._bind_scroll_wheel_to_descendants(self.s1_info_card)
 
-    def _render_s1_empty_state(self):
-        """Pinta el contenido empty-state de la card derecha "Resumen de
-        Carga" cuando todavia no hay PDFs cargados."""
-        inner = tk.Frame(self.s1_info_card, bg=SURFACE)
-        inner.pack(padx=24, pady=24, fill="both", expand=True)
+    def _build_s1_info_card_content(self, has_files):
+        """Pinta los hijos de s1_info_card siguiendo el rediseño Stitch.
 
-        tk.Label(
-            inner, text="📊  Resumen de Carga", font=FONT_BODY_BOLD,
-            bg=SURFACE, fg=TEXT, anchor="w",
-        ).pack(anchor="w")
-
-        # Mensaje grande centrado en el resto del espacio.
-        spacer = tk.Frame(inner, bg=SURFACE)
-        spacer.pack(fill="both", expand=True)
-        tk.Label(
-            spacer, text="⏳",
-            font=F(40), bg=SURFACE, fg=TEXT_LIGHT,
-        ).pack(pady=(30, 8))
-        tk.Label(
-            spacer, text="Esperando proforma",
-            font=FONT_BODY, bg=SURFACE, fg=TEXT_MUTED,
-        ).pack()
-        tk.Label(
-            spacer,
-            text="Cargá un PDF para ver el resumen acá.",
-            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT,
-        ).pack(pady=(4, 30))
-
-    def _render_s1_single_info(self):
-        """Renderiza el resumen para 1 PDF (formato detallado de siempre)."""
-        entry = self.parsed_data_list[0]
-        if "error" in entry:
-            # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
-            inner = tk.Frame(self.s1_info_card, bg=SURFACE)
-            inner.pack(padx=24, pady=20, fill="x")
-            tk.Label(
-                inner, text="Error", font=FONT_BODY_BOLD,
-                bg=SURFACE, fg=ERROR, anchor="w",
-            ).pack(anchor="w")
-            err_lbl = tk.Label(
-                inner, text=entry["error"], font=FONT_BODY,
-                bg=SURFACE, fg=TEXT_MUTED, anchor="w", justify="left",
-                wraplength=WINDOW_W - 2 * SCREEN_PADX - 60,
+        Estrategia de packing: el footer 'Total Detectado' se packea
+        primero con side='bottom' para que SIEMPRE quede pegado al
+        fondo de la card; el resto del contenido va arriba con
+        side='top' y expand=True, ocupando todo lo que sobra.
+        """
+        # ----- Footer 'Total Detectado' (pegado abajo) -----
+        total_skus = 0
+        if has_files:
+            total_skus = sum(
+                len(e["parsed"]["items"])
+                for e in self.parsed_data_list if "parsed" in e
             )
-            err_lbl.pack(anchor="w", fill="x", pady=(4, 0))
-            _bind_dynamic_wraplength(err_lbl, margin=8)
-            return
-
-        parsed = entry["parsed"]
-        items = parsed["items"]
-        fmt = parsed["format"]
-        total = len(items)
-
-        # Contar SKUs por marca + refs únicas + no reconocidos + sospechosos
-        from collections import Counter
-        brand_counts = Counter()
-        refs = set()
-        unrec, suspect = 0, 0
-        for it in items:
-            p = parse_sku(it["sku"])
-            if p is None:
-                unrec += 1
-                continue
-            refs.add(p["prefix"] + p["number"])
-            brand_counts[p["brand"]] += 1
-            if it.get("suspect"):
-                suspect += 1
-
-        fmt_label = _fmt_label(fmt)
-
-        # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
-        inner = tk.Frame(self.s1_info_card, bg=SURFACE)
-        inner.pack(padx=24, pady=22, fill="both", expand=True)
-
+        # Mismo color de fondo que el BG general — un gris-azulado MUY
+        # claro que enmarca el footer sin gritar.
+        total_box = tk.Frame(self.s1_info_card, bg=BG)
+        total_box.pack(side="bottom", fill="x")
+        total_row = tk.Frame(total_box, bg=BG)
+        total_row.pack(fill="x", padx=20, pady=14)
         tk.Label(
-            inner, text="📊  Resumen de Carga", font=FONT_BODY_BOLD,
-            bg=SURFACE, fg=TEXT, anchor="w",
-        ).pack(anchor="w", pady=(0, 14))
+            total_row, text="Total Detectado:",
+            font=FONT_BODY_BOLD, bg=BG, fg=TEXT, anchor="w",
+        ).pack(side="left")
+        if total_skus:
+            total_text = f"{total_skus} SKUs"
+            total_fg = ACCENT
+        else:
+            total_text = "—"
+            total_fg = TEXT_LIGHT
+        tk.Label(
+            total_row, text=total_text,
+            font=F(20, "bold"), bg=BG, fg=total_fg, anchor="e",
+        ).pack(side="right")
+
+        # ----- Contenido principal (arriba del footer) -----
+        inner = tk.Frame(self.s1_info_card, bg=SURFACE)
+        inner.pack(side="top", padx=20, pady=20, fill="both", expand=True)
+
+        # Header con icono circular azul.
+        self._build_s1_info_header(inner)
 
         # ===== ARCHIVOS CARGADOS =====
         tk.Label(
@@ -3160,53 +3284,49 @@ class App:
             font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
         ).pack(anchor="w", pady=(0, 8))
 
-        # Cada archivo en su propia "box" con border 1px (como en Stitch).
-        file_box = tk.Frame(
-            inner, bg=SURFACE,
-            highlightbackground=BORDER_SUBTLE, highlightcolor=BORDER_SUBTLE,
-            highlightthickness=1, bd=0,
-        )
-        file_box.pack(fill="x", pady=(0, 12))
-        file_row = tk.Frame(file_box, bg=SURFACE)
-        file_row.pack(fill="x", padx=12, pady=10)
-        # Check azul en circulo claro (igual al diseño).
-        check_canvas = tk.Canvas(
-            file_row, width=24, height=24, bg=SURFACE,
-            highlightthickness=0, bd=0,
-        )
-        check_canvas.pack(side="left", padx=(0, 10))
-        check_canvas.create_oval(0, 0, 24, 24, fill=ACCENT_TINT, outline="")
-        check_canvas.create_text(12, 12, text="✓", fill=ACCENT, font=F(11, "bold"))
+        if not has_files:
+            tk.Label(
+                inner,
+                text="Aún no cargaste ninguna proforma.",
+                font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            ).pack(anchor="w")
+        else:
+            for entry in self.parsed_data_list:
+                self._build_s1_file_box(inner, entry)
 
-        file_text = tk.Frame(file_row, bg=SURFACE)
-        file_text.pack(side="left", fill="x", expand=True)
-        tk.Label(
-            file_text, text=_display_name_for_path(entry["path"]),
-            font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
-        ).pack(anchor="w")
-        client = parsed.get("client") or "(sin cliente)"
-        tk.Label(
-            file_text,
-            text=f"{fmt_label}  ·  {total} SKUs",
-            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-        ).pack(anchor="w")
-        # Boton papelera 🗑.
-        del_btn = tk.Label(
-            file_row, text="🗑", font=F(13),
-            bg=SURFACE, fg=TEXT_LIGHT, padx=4,
-        )
-        del_btn.pack(side="right")
-        del_btn.bind("<Enter>", lambda _e, b=del_btn: b.configure(fg=ERROR))
-        del_btn.bind("<Leave>", lambda _e, b=del_btn: b.configure(fg=TEXT_LIGHT))
-        del_btn.bind("<Button-1>", lambda _e, p=entry["path"]: self._remove_pdf(p))
+        # ----- Separador hairline -----
+        sep = tk.Frame(inner, bg=BORDER_SUBTLE, height=1)
+        sep.pack(fill="x", pady=(14, 12))
 
         # ===== DESGLOSE POR MARCA =====
-        if brand_counts:
+        tk.Label(
+            inner, text="DESGLOSE POR MARCA",
+            font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+        ).pack(anchor="w", pady=(0, 8))
+
+        # Computar brand_counts agregado de TODOS los PDFs cargados.
+        from collections import Counter
+        brand_counts = Counter()
+        unrec = 0
+        for entry in self.parsed_data_list:
+            if "parsed" not in entry:
+                continue
+            for it in entry["parsed"]["items"]:
+                p = parse_sku(it["sku"])
+                if p is None:
+                    unrec += 1
+                    continue
+                brand_counts[p["brand"]] += 1
+
+        if not brand_counts:
             tk.Label(
-                inner, text="DESGLOSE POR MARCA",
-                font=FONT_SECTION_LABEL, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
-            ).pack(anchor="w", pady=(8, 8))
-            for brand in sorted(brand_counts.keys(), key=lambda b: -brand_counts[b]):
+                inner,
+                text="Sin marcas detectadas todavía.",
+                font=FONT_CAPTION, bg=SURFACE, fg=TEXT_LIGHT, anchor="w",
+            ).pack(anchor="w")
+        else:
+            for brand in sorted(brand_counts.keys(),
+                                key=lambda b: -brand_counts[b]):
                 row = tk.Frame(inner, bg=SURFACE)
                 row.pack(fill="x", pady=3)
                 tk.Label(
@@ -3226,97 +3346,99 @@ class App:
                 font=FONT_CAPTION, bg=SURFACE, fg=ERROR, anchor="w",
             ).pack(anchor="w", pady=(8, 0))
 
-        # ===== TOTAL DETECTADO (banner azul claro) =====
-        tk.Frame(inner, bg=SURFACE, height=6).pack(fill="x", pady=(8, 0))
-        # Box con bg azul claro tinted que enmarca el total.
-        total_box = tk.Frame(inner, bg=ACCENT_TINT)
-        total_box.pack(fill="x", pady=(6, 0))
-        total_row = tk.Frame(total_box, bg=ACCENT_TINT)
-        total_row.pack(fill="x", padx=14, pady=12)
-        tk.Label(
-            total_row, text="Total Detectado:",
-            font=FONT_BODY_BOLD, bg=ACCENT_TINT, fg=TEXT, anchor="w",
-        ).pack(side="left")
-        tk.Label(
-            total_row, text=f"{total} SKUs",
-            font=F(20, "bold"), bg=ACCENT_TINT, fg=ACCENT, anchor="e",
-        ).pack(side="right")
-
-    def _render_s1_batch_info(self):
-        """Renderiza la lista de PDFs cuando son varios (modo batch)."""
-        # NOTE: la card ya esta en grid de show_screen1; no la re-empaquetamos.
-        inner = tk.Frame(self.s1_info_card, bg=SURFACE)
-        inner.pack(padx=24, pady=20, fill="x")
-
-        n_total = len(self.parsed_data_list)
-        n_ok = sum(1 for e in self.parsed_data_list if "parsed" in e)
-        n_skus = sum(
-            len(e["parsed"]["items"]) for e in self.parsed_data_list if "parsed" in e
+    def _build_s1_info_header(self, parent):
+        """Header 'Resumen de Carga' con icono circular azul (bar
+        chart de 3 barras dibujado a mano en Canvas — Stitch usa
+        Material 'bar_chart', emojis no quedan iguales)."""
+        row = tk.Frame(parent, bg=SURFACE)
+        row.pack(anchor="w", fill="x", pady=(0, 14))
+        cv = tk.Canvas(
+            row, width=30, height=30, bg=SURFACE,
+            highlightthickness=0, bd=0,
         )
-
+        cv.create_oval(0, 0, 30, 30, fill=ACCENT_TINT, outline="")
+        # 3 barras de bar chart. Base comun y=22, alturas crecientes
+        # de izquierda a derecha — la del medio en el centro horizontal
+        # del circulo (x=15).
+        cv.create_rectangle(8,  17, 12, 22, fill=ACCENT, outline="")
+        cv.create_rectangle(13, 13, 17, 22, fill=ACCENT, outline="")
+        cv.create_rectangle(18, 10, 22, 22, fill=ACCENT, outline="")
+        cv.pack(side="left", padx=(0, 10))
         tk.Label(
-            inner, text=f"Procesar {n_total} proformas",
+            row, text="Resumen de Carga", font=FONT_BODY_BOLD,
+            bg=SURFACE, fg=TEXT, anchor="w",
+        ).pack(side="left")
+
+    def _build_s1_file_box(self, parent, entry):
+        """Box con border 1px que muestra un archivo cargado.
+        Cuando hay error, el icono cambia a ✕ rojo y el subtitulo
+        muestra el mensaje de error."""
+        path = entry["path"]
+        name = _display_name_for_path(path)
+        has_error = "error" in entry
+
+        file_box = tk.Frame(
+            parent, bg=SURFACE,
+            highlightbackground=BORDER_SUBTLE, highlightcolor=BORDER_SUBTLE,
+            highlightthickness=1, bd=0,
+        )
+        file_box.pack(fill="x", pady=(0, 8))
+        file_row = tk.Frame(file_box, bg=SURFACE)
+        file_row.pack(fill="x", padx=12, pady=10)
+
+        # Icono circular (✓ azul o ✕ rojo segun estado).
+        icon_cv = tk.Canvas(
+            file_row, width=24, height=24, bg=SURFACE,
+            highlightthickness=0, bd=0,
+        )
+        icon_cv.pack(side="left", padx=(0, 10))
+        if has_error:
+            # Rojo suave: no tenemos ACCENT_TINT rojo en la paleta,
+            # asi que armamos uno inline (similar a #FBE0E0).
+            icon_cv.create_oval(0, 0, 24, 24, fill="#FBE0E0", outline="")
+            icon_cv.create_text(12, 12, text="✕", fill=ERROR,
+                                font=F(11, "bold"))
+        else:
+            icon_cv.create_oval(0, 0, 24, 24, fill=ACCENT_TINT, outline="")
+            icon_cv.create_text(12, 12, text="✓", fill=ACCENT,
+                                font=F(11, "bold"))
+
+        # Papelera 🗑 a la derecha (la packeamos antes que el bloque
+        # de texto para que reserve su espacio).
+        del_btn = tk.Label(
+            file_row, text="🗑", font=F(13),
+            bg=SURFACE, fg=TEXT_LIGHT, padx=4,
+        )
+        del_btn.pack(side="right")
+        del_btn.bind("<Enter>", lambda _e, b=del_btn: b.configure(fg=ERROR))
+        del_btn.bind("<Leave>", lambda _e, b=del_btn: b.configure(fg=TEXT_LIGHT))
+        del_btn.bind("<Button-1>", lambda _e, p=path: self._remove_pdf(p))
+
+        # Texto: nombre + subtitulo (formato · N SKUs, o mensaje de error).
+        file_text = tk.Frame(file_row, bg=SURFACE)
+        file_text.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            file_text, text=name,
             font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
-        ).pack(anchor="w")
-        tk.Label(
-            inner,
-            text=f"{n_ok} OK, {n_total - n_ok} con error · {n_skus} SKUs en total",
-            font=FONT_CAPTION, bg=SURFACE, fg=TEXT_MUTED, anchor="w",
-        ).pack(anchor="w", pady=(2, 12))
+        ).pack(anchor="w", fill="x")
 
-        # Lista por PDF
-        for entry in self.parsed_data_list:
-            row = tk.Frame(inner, bg=SURFACE)
-            row.pack(fill="x", pady=3)
-            name = _display_name_for_path(entry["path"])
-            path = entry["path"]
-
-            # Boton × a la derecha para quitar este PDF del batch.
-            # Lo packeamos primero (side="right") para que reserve su espacio
-            # antes que las labels llenen el resto de la fila.
-            remove_btn = tk.Label(
-                row, text="×", font=FONT_BODY_BOLD,
-                bg=SURFACE, fg=TEXT_LIGHT, padx=8,
-            )
-            remove_btn.pack(side="right")
-            # Hover sutil: cambia a rojo cuando el mouse esta encima.
-            remove_btn.bind("<Enter>", lambda e, b=remove_btn: b.configure(fg=ERROR))
-            remove_btn.bind("<Leave>", lambda e, b=remove_btn: b.configure(fg=TEXT_LIGHT))
-            remove_btn.bind("<Button-1>", lambda e, p=path: self._remove_pdf(p))
-
-            if "error" in entry:
-                # icono de error como texto
-                tk.Label(
-                    row, text="✗", font=FONT_BODY_BOLD,
-                    bg=SURFACE, fg=ERROR, width=2, anchor="w",
-                ).pack(side="left")
-                tk.Label(
-                    row, text=name, font=FONT_BODY,
-                    bg=SURFACE, fg=TEXT, anchor="w",
-                ).pack(side="left")
-                tk.Label(
-                    row, text=entry["error"], font=FONT_CAPTION,
-                    bg=SURFACE, fg=ERROR, anchor="e",
-                ).pack(side="right", padx=(8, 0))
-            else:
-                p = entry["parsed"]
-                client = p.get("client") or "(sin cliente)"
-                n_items = len(p["items"])
-                fmt_label = _fmt_label(p.get("format"))
-                tk.Label(
-                    row, text="✓", font=FONT_BODY_BOLD,
-                    bg=SURFACE, fg=SUCCESS, width=2, anchor="w",
-                ).pack(side="left")
-                tk.Label(
-                    row, text=name, font=FONT_BODY,
-                    bg=SURFACE, fg=TEXT, anchor="w",
-                ).pack(side="left")
-                # Texto a la derecha: cliente · formato · n SKUs.
-                detail = f"{client} · {fmt_label} · {n_items} SKUs" if fmt_label else f"{client} · {n_items} SKUs"
-                tk.Label(
-                    row, text=detail,
-                    font=FONT_CAPTION, bg=SURFACE, fg=TEXT_MUTED, anchor="e",
-                ).pack(side="right", padx=(8, 0))
+        if has_error:
+            sub_text = entry["error"]
+            sub_fg = ERROR
+        else:
+            parsed = entry["parsed"]
+            fmt_label = _fmt_label(parsed.get("format"))
+            n_items = len(parsed["items"])
+            sub_text = (f"{fmt_label} · {n_items} SKUs"
+                        if fmt_label else f"{n_items} SKUs")
+            sub_fg = TEXT_LIGHT
+        sub_lbl = tk.Label(
+            file_text, text=sub_text, font=FONT_CAPTION,
+            bg=SURFACE, fg=sub_fg, anchor="w",
+            justify="left", wraplength=220,
+        )
+        sub_lbl.pack(anchor="w", fill="x")
+        _bind_dynamic_wraplength(sub_lbl, margin=8)
 
     # =========================================================================
     # PANTALLA 2 - Modo y año
