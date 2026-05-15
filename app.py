@@ -4083,6 +4083,7 @@ class App:
                     res = processor.process(
                         None if is_list else pdf_path, modo,
                         on_progress=wrap_progress,
+                        on_photo_copied=self._on_photo_copied_bg,
                         use_grupal_when_no_individuals=use_grupal_no_ind,
                         dest_root=dest_root,
                         dest_folder_name=folder_name,
@@ -4252,6 +4253,24 @@ class App:
         # Mantengo el atributo como alias del chip para no romper el flow.
         self.s3_detail_label = self.s3_msg_label  # placeholder safe
 
+        # ---- Fila de 6 thumbnails de progreso ----
+        # Cada slot empieza en estado "pending" (gris con icono imagen).
+        # Cuando llega un on_photo_copied del processor, _on_photo_copied
+        # carga el thumb y lo aplica + overlay de check azul.
+        self.s3_thumbs_frame = tk.Frame(inner, bg=SURFACE)
+        self.s3_thumbs_frame.pack(pady=(20, 0))
+        self._s3_thumb_canvases = []
+        self._s3_thumbs_done = 0  # contador de slots ya populados
+        for i in range(6):
+            cv = tk.Canvas(
+                self.s3_thumbs_frame,
+                width=self._S3_THUMB_SIZE, height=self._S3_THUMB_SIZE,
+                bg=SURFACE, highlightthickness=0, bd=0,
+            )
+            cv.pack(side="left", padx=(0 if i == 0 else 10, 0))
+            self._draw_s3_thumb_pending(cv)
+            self._s3_thumb_canvases.append(cv)
+
         # Botón Cancelar abajo de la card (alineado a la derecha).
         cancel_row = tk.Frame(body, bg=BG)
         cancel_row.pack(fill="x", pady=(SECTION_GAP, 0))
@@ -4308,6 +4327,102 @@ class App:
                 font=FONT_BODY_BOLD, bg=SURFACE, fg=TEXT, anchor="w",
                 wraplength=200, justify="left",
             ).pack(anchor="w", fill="x")
+
+    # Tamaño visual de cada slot de thumbnail en pantalla 3 procesando.
+    # 116px entra holgado en una card de ~700px de ancho con 6 slots
+    # (6 * 116 + 5 * 10 gap = 746) — si se aprieta, los thumbs ajustan al
+    # ancho disponible naturalmente (Canvas fixed pero Frame se centra).
+    _S3_THUMB_SIZE = 116
+    _S3_THUMB_RADIUS = 10
+
+    def _draw_s3_thumb_pending(self, canvas):
+        """Pinta un slot vacío (estado pendiente): rounded rect HOVER_BG
+        + emoji 🖼 al centro en gris claro."""
+        canvas.delete("all")
+        size = self._S3_THUMB_SIZE
+        r = self._S3_THUMB_RADIUS
+        _canvas_rounded_fill(canvas, 0, 0, size, size, r, HOVER_BG)
+        canvas.create_text(
+            size / 2, size / 2, text="🖼",
+            fill=TEXT_LIGHT, font=F(30),
+        )
+
+    def _draw_s3_thumb_check_overlay(self, canvas):
+        """Overlay de check azul al centro del thumbnail. Se dibuja
+        DESPUES de la imagen, asi queda encima."""
+        size = self._S3_THUMB_SIZE
+        cx, cy = size / 2, size / 2
+        # Circulo azul vibrante (matches el #3B82F6 que pidio el user).
+        r = 16
+        canvas.create_oval(
+            cx - r, cy - r, cx + r, cy + r,
+            fill="#3B82F6", outline="",
+        )
+        # Tilde blanco bold dentro del circulo.
+        canvas.create_text(
+            cx, cy + 1, text="✓",
+            fill="#FFFFFF", font=F(16, "bold"),
+        )
+
+    def _on_photo_copied_bg(self, src_path):
+        """Callback del processor (corre en su thread). Solo encola al
+        main thread — todo el trabajo de UI se hace en _on_photo_copied
+        para evitar tocar tk desde fuera del mainloop."""
+        self.root.after(0, lambda p=src_path: self._on_photo_copied(p))
+
+    def _on_photo_copied(self, src_path):
+        """Main thread: avanza el contador de thumbs y dispara la carga
+        async del thumbnail si todavía hay slots libres."""
+        canvases = getattr(self, "_s3_thumb_canvases", None)
+        if not canvases:
+            return
+        idx = self._s3_thumbs_done
+        if idx >= len(canvases):
+            return  # ya tenemos los 6 slots populados
+        self._s3_thumbs_done = idx + 1
+        # Lanzamos un daemon para cargar la imagen sin trabar el UI —
+        # PIL es lento abriendo fotos de varios MB.
+        size = self._S3_THUMB_SIZE
+        radius = self._S3_THUMB_RADIUS
+        bg_hex = SURFACE
+
+        def _load():
+            if Image is None:
+                return
+            try:
+                img = Image.open(src_path).convert("RGB")
+                img = _square_crop(img).resize(
+                    (size, size), Image.LANCZOS,
+                )
+                img = _round_image_corners(img, radius, bg_hex)
+                self.root.after(
+                    0, lambda im=img, i=idx: self._apply_s3_thumb(i, im),
+                )
+            except Exception:
+                # Fallo al abrir/decodificar: dejamos el slot en pending.
+                # No es critico (el proceso real ya copio la foto OK).
+                pass
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _apply_s3_thumb(self, idx, pil_img):
+        """Aplica la imagen redondeada al Canvas del slot idx y dibuja
+        el overlay de check azul encima."""
+        canvases = getattr(self, "_s3_thumb_canvases", None)
+        if not canvases or idx >= len(canvases):
+            return
+        canvas = canvases[idx]
+        if canvas is None or not canvas.winfo_exists():
+            return
+        try:
+            tk_img = ImageTk.PhotoImage(pil_img)
+        except Exception:
+            return
+        size = self._S3_THUMB_SIZE
+        canvas.delete("all")
+        canvas.create_image(size / 2, size / 2, image=tk_img)
+        # Ref attr para que el GC no la destruya antes que el canvas.
+        canvas.image = tk_img
+        self._draw_s3_thumb_check_overlay(canvas)
 
     def _build_processing_chip(self, text):
         """Pinta el chip con el SKU actual en el holder. Limpiamos el

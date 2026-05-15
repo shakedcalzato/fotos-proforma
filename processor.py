@@ -331,7 +331,7 @@ def _copy_compressed(src, target, compress_mode):
         return False
 
 
-def process(pdf_path, modo, on_progress=None,
+def process(pdf_path, modo, on_progress=None, on_photo_copied=None,
             use_grupal_when_no_individuals=False,
             dest_root=None, dest_folder_name=None,
             cancel_event=None, parsed_override=None,
@@ -342,6 +342,10 @@ def process(pdf_path, modo, on_progress=None,
         pdf_path:         str/Path al PDF, o None si parsed_override viene.
         modo:             "grupal" | "individual" | "complete"
         on_progress:      callable(actual:int, total:int, mensaje:str) - opcional
+        on_photo_copied:  callable(src_path:str) - opcional. Se llama cada
+                          vez que una foto se copia exitosamente al destino,
+                          con el path de origen (la foto en Dropbox). UI lo
+                          usa para mostrar thumbnails de progreso en vivo.
         cancel_event:     threading.Event opcional. Si se setea durante el
                           proceso, el runner corta entre SKUs y retorna lo
                           copiado hasta ese punto. El dict resultante tiene
@@ -377,6 +381,15 @@ def process(pdf_path, modo, on_progress=None,
     def progress(i, n, msg=""):
         if on_progress:
             on_progress(i, n, msg)
+
+    def photo_copied(src):
+        """Notifica a la UI que se copio una foto. Falla silenciosa: la
+        UI usa esto solo para los thumbnails de progreso, no es critico."""
+        if on_photo_copied:
+            try:
+                on_photo_copied(str(src))
+            except Exception:
+                pass
 
     # Origen de los items: PDF parseado, o dict override (modo lista).
     if parsed_override is not None:
@@ -455,12 +468,14 @@ def process(pdf_path, modo, on_progress=None,
             use_grupal_when_no_individuals=use_grupal_when_no_individuals,
             cancel_event=cancel_event,
             compress_mode=compress_mode,
+            on_photo_copied=photo_copied,
         )
     else:
         copied_count, copied_per_brand = _run_simple(
             valid_items, modo, year, dbx, dest, progress, missing,
             cancel_event=cancel_event,
             compress_mode=compress_mode,
+            on_photo_copied=photo_copied,
         )
 
     cancelled = bool(cancel_event is not None and cancel_event.is_set())
@@ -551,7 +566,8 @@ def _find_refs_without_individuals(valid_items, year, dbx):
 # =============================================================================
 
 def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
-                cancel_event=None, compress_mode="original"):
+                cancel_event=None, compress_mode="original",
+                on_photo_copied=None):
     """MODE_GRUPAL y MODE_INDIVIDUAL.
 
     - GRUPAL: dedup por (prefix, number), buscar grupal de cada referencia.
@@ -614,6 +630,8 @@ def _run_simple(valid_items, modo, year, dbx, dest, progress, missing,
             copied += 1
             copied_per_brand[brand] += 1
             copied_sources.add(src)
+            if on_photo_copied:
+                on_photo_copied(src)
     return copied, copied_per_brand
 
 
@@ -652,7 +670,8 @@ def _all_existing_covered(existing, ordered):
 
 def _run_complete(valid_items, year, dbx, dest, progress, missing,
                   use_grupal_when_no_individuals=False,
-                  cancel_event=None, compress_mode="original"):
+                  cancel_event=None, compress_mode="original",
+                  on_photo_copied=None):
     """MODE_COMPLETE: por cada referencia base, decidir grupal vs individuales.
 
     Regla: si la proforma pidio TODOS los colores que existen en disco para
@@ -734,6 +753,8 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                 copied += 1
                 copied_per_brand[brand] += 1
                 copied_sources.add(grupal_src)
+                if on_photo_copied:
+                    on_photo_copied(grupal_src)
         else:
             # No esta completa o no hay grupal: mandamos las individuales pedidas.
             mandated_individuals = False  # ¿realmente mandamos algun individual?
@@ -769,6 +790,8 @@ def _run_complete(valid_items, year, dbx, dest, progress, missing,
                     copied_per_brand[brand] += 1
                     copied_sources.add(src)
                     mandated_individuals = True
+                    if on_photo_copied:
+                        on_photo_copied(src)
             # NOTA: si la marca no tiene grupales en disco (ej Sneakers
             # Supply) pero las individuales se mandaron OK, NO agregamos
             # nada al reporte de faltantes. Las fotos estan en la carpeta,
