@@ -959,19 +959,30 @@ class Card(tk.Frame):
 class OptionCard(tk.Frame):
     """Card clickable que representa una opción de un grupo de radios.
     Click en cualquier parte de la card la selecciona.
+
+    Visuales (alineados con rediseño Stitch):
+    - Seleccionada: fondo ACCENT_TINT azul claro, borde ACCENT, titulo
+      en ACCENT bold. Indicador = circulo borde azul + dot azul lleno.
+    - No seleccionada: fondo SURFACE, borde BORDER_SUBTLE gris muy
+      sutil, titulo en TEXT. Indicador = circulo borde BORDER vacio.
+    - Hover en no-seleccionada: borde se oscurece de BORDER_SUBTLE a
+      BORDER (feedback de "se puede clickear"). En seleccionada el
+      hover no cambia nada — ya esta destacada.
     """
 
     def __init__(self, parent, var, value, title, subtitle):
         super().__init__(
             parent, bg=SURFACE,
-            highlightbackground=BORDER, highlightcolor=BORDER,
+            highlightbackground=BORDER_SUBTLE, highlightcolor=BORDER_SUBTLE,
             highlightthickness=1,
         )
         self.var = var
         self.value = value
+        self._hover = False
 
+        # Padding generoso (Stitch usa cards aireadas — antes era 16/10).
         inner = tk.Frame(self, bg=SURFACE)
-        inner.pack(fill="both", expand=True, padx=16, pady=10)
+        inner.pack(fill="both", expand=True, padx=18, pady=14)
 
         self.indicator = tk.Canvas(
             inner, width=20, height=20,
@@ -988,23 +999,44 @@ class OptionCard(tk.Frame):
         )
         self.title_label.pack(anchor="w")
 
-        self.subtitle_label = tk.Label(
-            text_frame, text=subtitle, font=FONT_OPTION_SUB,
-            bg=SURFACE, fg=TEXT_MUTED, anchor="w",
-            justify="left",
-        )
-        self.subtitle_label.pack(anchor="w", pady=(2, 0))
+        # El subtitulo es opcional — si esta vacio no lo packeamos para
+        # no dejar un pady=2 fantasma debajo del titulo.
+        if subtitle:
+            self.subtitle_label = tk.Label(
+                text_frame, text=subtitle, font=FONT_OPTION_SUB,
+                bg=SURFACE, fg=TEXT_MUTED, anchor="w",
+                justify="left",
+            )
+            self.subtitle_label.pack(anchor="w", pady=(2, 0))
+        else:
+            self.subtitle_label = None
 
         # Bind click en TODOS los descendientes para que el toque funcione
-        for w in (self, inner, text_frame, self.indicator,
-                  self.title_label, self.subtitle_label):
+        # en cualquier parte de la card, no solo sobre el indicador.
+        clickable = [self, inner, text_frame, self.indicator, self.title_label]
+        if self.subtitle_label is not None:
+            clickable.append(self.subtitle_label)
+        for w in clickable:
             w.bind("<Button-1>", lambda e: self._select())
+
+        # Hover handlers — solo en el frame raiz (al ser el unico que tiene
+        # un borde dibujado, basta con uno).
+        self.bind("<Enter>", self._on_hover_in, add="+")
+        self.bind("<Leave>", self._on_hover_out, add="+")
 
         var.trace_add("write", lambda *a: self._render())
         self._render()
 
     def _select(self):
         self.var.set(self.value)
+
+    def _on_hover_in(self, _event=None):
+        self._hover = True
+        self._render()
+
+    def _on_hover_out(self, _event=None):
+        self._hover = False
+        self._render()
 
     def _render(self):
         # Guard: el trace_add al StringVar sobrevive al destroy del widget.
@@ -1019,21 +1051,34 @@ class OptionCard(tk.Frame):
             return
 
         selected = (self.var.get() == self.value)
-        bg = ACCENT_TINT if selected else SURFACE
-        border = ACCENT if selected else BORDER
+        if selected:
+            bg = ACCENT_TINT
+            border = ACCENT
+            title_fg = ACCENT
+            title_font = F(15, "bold")
+            ind_outline = ACCENT
+        else:
+            bg = SURFACE
+            # En idle el borde es BORDER_SUBTLE (muy fino); al hover sube
+            # a BORDER. Nunca volvemos a borde fuerte porque ya distingue
+            # claramente con el selected azul.
+            border = BORDER if self._hover else BORDER_SUBTLE
+            title_fg = TEXT
+            title_font = FONT_OPTION_TITLE
+            ind_outline = BORDER
 
         try:
             self.configure(highlightbackground=border, bg=bg)
             self._set_bg_recursive(self, bg, skip=self.indicator)
+            self.title_label.configure(fg=title_fg, font=title_font)
 
-            # indicador
+            # Indicador (radio): círculo borde + dot interior si selected.
             self.indicator.delete("all")
             self.indicator.configure(bg=bg)
             cx, cy, r = 10, 10, 8
             self.indicator.create_oval(
                 cx - r, cy - r, cx + r, cy + r,
-                outline=ACCENT if selected else BORDER_STRONG,
-                width=1.6, fill=bg,
+                outline=ind_outline, width=1.6, fill=bg,
             )
             if selected:
                 r2 = 4
